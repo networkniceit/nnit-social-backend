@@ -1,2 +1,2 @@
-#!/bin/bash
+﻿#!/bin/bash
 node server-simple.js
