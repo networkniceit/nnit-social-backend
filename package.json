@@ -1,13 +1,9 @@
 {
   "name": "nnit-social-backend",
   "version": "1.0.0",
-  "description": "NNIT Social Automation Backend",
   "main": "server-simple.js",
   "scripts": {
     "start": "node server-simple.js"
-  },
-  "engines": {
-    "node": ">=18.0.0"
   },
   "dependencies": {
     "express": "^4.18.2",
