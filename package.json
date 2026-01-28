@@ -1,9 +1,9 @@
 {
   "name": "nnit-social-backend",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "server-groq.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server-groq.js"
   },
   "dependencies": {
     "express": "^4.18.2",
