@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
-const { OpenAI } = require('openai');
 const Groq = require('groq-sdk');
 
 const app = express();
