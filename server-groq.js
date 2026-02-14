@@ -21,6 +21,7 @@ const scheduledPosts = [];
 const publishedPosts = [];
 const autoReplies = [];
 const analytics = new Map();
+const tiktokAppConfigs = new Map(); // Store TikTok app configurations per client
 
 // ================================================================
 // CLIENT MANAGEMENT ROUTES
@@ -225,6 +226,301 @@ app.get('/api/clients/:clientId/platforms', (req, res) => {
   }));
   
   res.json({ success: true, platforms });
+});
+
+// ================================================================
+// TIKTOK APP CONFIGURATION ROUTES
+// ================================================================
+
+// Create or update TikTok app configuration
+app.post('/api/clients/:clientId/tiktok/app-config', (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = clients.get(clientId);
+    
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    const {
+      // Credentials
+      clientKey,
+      clientSecret,
+      // Basic Information
+      appIcon,
+      appName,
+      category,
+      description,
+      termsOfServiceUrl,
+      privacyPolicyUrl,
+      // Platforms
+      platforms,
+      // App Review
+      reviewExplanation,
+      demoVideos,
+      // Products and Scopes
+      products,
+      scopes
+    } = req.body;
+
+    const appConfig = {
+      clientId,
+      credentials: {
+        clientKey: clientKey || '',
+        clientSecret: clientSecret || '',
+        createdAt: tiktokAppConfigs.get(clientId)?.credentials?.createdAt || new Date().toISOString()
+      },
+      basicInfo: {
+        appIcon: appIcon || '',
+        appName: appName || '',
+        category: category || '',
+        description: description || '',
+        termsOfServiceUrl: termsOfServiceUrl || '',
+        privacyPolicyUrl: privacyPolicyUrl || ''
+      },
+      platforms: platforms || [],
+      appReview: {
+        explanation: reviewExplanation || '',
+        demoVideos: demoVideos || [],
+        status: 'draft' // draft, submitted, approved, rejected
+      },
+      products: products || [],
+      scopes: scopes || [],
+      updatedAt: new Date().toISOString(),
+      createdAt: tiktokAppConfigs.get(clientId)?.createdAt || new Date().toISOString()
+    };
+
+    tiktokAppConfigs.set(clientId, appConfig);
+    
+    res.json({ 
+      success: true, 
+      message: 'TikTok app configuration saved',
+      config: appConfig 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get TikTok app configuration
+app.get('/api/clients/:clientId/tiktok/app-config', (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = clients.get(clientId);
+    
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    const appConfig = tiktokAppConfigs.get(clientId);
+    
+    if (!appConfig) {
+      // Return empty config structure if none exists
+      return res.json({
+        success: true,
+        config: {
+          clientId,
+          credentials: {
+            clientKey: '',
+            clientSecret: ''
+          },
+          basicInfo: {
+            appIcon: '',
+            appName: '',
+            category: '',
+            description: '',
+            termsOfServiceUrl: '',
+            privacyPolicyUrl: ''
+          },
+          platforms: [],
+          appReview: {
+            explanation: '',
+            demoVideos: [],
+            status: 'draft'
+          },
+          products: [],
+          scopes: []
+        }
+      });
+    }
+
+    res.json({ success: true, config: appConfig });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Update specific TikTok app configuration fields
+app.put('/api/clients/:clientId/tiktok/app-config', (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = clients.get(clientId);
+    
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    let appConfig = tiktokAppConfigs.get(clientId);
+    
+    if (!appConfig) {
+      // Initialize if doesn't exist
+      appConfig = {
+        clientId,
+        credentials: { clientKey: '', clientSecret: '' },
+        basicInfo: {
+          appIcon: '',
+          appName: '',
+          category: '',
+          description: '',
+          termsOfServiceUrl: '',
+          privacyPolicyUrl: ''
+        },
+        platforms: [],
+        appReview: {
+          explanation: '',
+          demoVideos: [],
+          status: 'draft'
+        },
+        products: [],
+        scopes: [],
+        createdAt: new Date().toISOString()
+      };
+    }
+
+    // Update fields that are provided
+    const updates = req.body;
+    
+    if (updates.credentials) {
+      appConfig.credentials = { ...appConfig.credentials, ...updates.credentials };
+    }
+    if (updates.basicInfo) {
+      appConfig.basicInfo = { ...appConfig.basicInfo, ...updates.basicInfo };
+    }
+    if (updates.platforms !== undefined) {
+      appConfig.platforms = updates.platforms;
+    }
+    if (updates.appReview) {
+      appConfig.appReview = { ...appConfig.appReview, ...updates.appReview };
+    }
+    if (updates.products !== undefined) {
+      appConfig.products = updates.products;
+    }
+    if (updates.scopes !== undefined) {
+      appConfig.scopes = updates.scopes;
+    }
+
+    appConfig.updatedAt = new Date().toISOString();
+    tiktokAppConfigs.set(clientId, appConfig);
+    
+    res.json({ 
+      success: true, 
+      message: 'TikTok app configuration updated',
+      config: appConfig 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Delete TikTok app configuration
+app.delete('/api/clients/:clientId/tiktok/app-config', (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = clients.get(clientId);
+    
+    if (!client) {
+      return res.status(404).json({ error: 'Client not found' });
+    }
+
+    tiktokAppConfigs.delete(clientId);
+    
+    res.json({ 
+      success: true, 
+      message: 'TikTok app configuration deleted' 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get available TikTok products
+app.get('/api/tiktok/products', (req, res) => {
+  const products = [
+    { id: 'share_kit', name: 'Share Kit', description: 'Allow users to share content to TikTok' },
+    { id: 'login_kit', name: 'Login Kit', description: 'TikTok login for your app' },
+    { id: 'content_posting_api', name: 'Content Posting API', description: 'Post videos directly to TikTok' },
+    { id: 'research_api', name: 'Research API', description: 'Access TikTok data for research' },
+    { id: 'display_api', name: 'Display API', description: 'Display TikTok content' },
+    { id: 'embed_videos', name: 'Embed Videos', description: 'Embed TikTok videos in your app' },
+    { id: 'data_portability_api', name: 'Data Portability API', description: 'Export user data' },
+    { id: 'green_screen_kit', name: 'Green Screen Kit', description: 'Green screen effects' },
+    { id: 'commercial_content_api', name: 'Commercial Content API', description: 'Manage commercial content' }
+  ];
+  
+  res.json({ success: true, products });
+});
+
+// Get available TikTok scopes (permissions)
+app.get('/api/tiktok/scopes', (req, res) => {
+  const scopes = [
+    { id: 'user.info.basic', name: 'Basic User Info', description: 'Access basic user profile information' },
+    { id: 'user.info.profile', name: 'Profile Info', description: 'Access detailed profile information' },
+    { id: 'user.info.stats', name: 'User Stats', description: 'Access user statistics' },
+    { id: 'video.list', name: 'Video List', description: 'Access list of user videos' },
+    { id: 'video.upload', name: 'Video Upload', description: 'Upload videos on behalf of user' },
+    { id: 'video.publish', name: 'Video Publish', description: 'Publish videos' },
+    { id: 'share.sound.create', name: 'Create Sound', description: 'Create custom sounds' }
+  ];
+  
+  res.json({ success: true, scopes });
+});
+
+// Submit TikTok app for review
+app.post('/api/clients/:clientId/tiktok/app-config/submit', (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const appConfig = tiktokAppConfigs.get(clientId);
+    
+    if (!appConfig) {
+      return res.status(404).json({ error: 'TikTok app configuration not found' });
+    }
+
+    // Validate required fields
+    const errors = [];
+    
+    if (!appConfig.basicInfo.appName) errors.push('App name is required');
+    if (!appConfig.basicInfo.category) errors.push('Category is required');
+    if (!appConfig.basicInfo.description) errors.push('Description is required');
+    if (!appConfig.basicInfo.termsOfServiceUrl) errors.push('Terms of Service URL is required');
+    if (!appConfig.basicInfo.privacyPolicyUrl) errors.push('Privacy Policy URL is required');
+    if (!appConfig.platforms || appConfig.platforms.length === 0) errors.push('At least one platform is required');
+    if (!appConfig.appReview.explanation) errors.push('App review explanation is required');
+    if (!appConfig.appReview.demoVideos || appConfig.appReview.demoVideos.length === 0) {
+      errors.push('At least one demo video is required');
+    }
+
+    if (errors.length > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Validation failed', 
+        errors 
+      });
+    }
+
+    appConfig.appReview.status = 'submitted';
+    appConfig.appReview.submittedAt = new Date().toISOString();
+    appConfig.updatedAt = new Date().toISOString();
+    
+    tiktokAppConfigs.set(clientId, appConfig);
+    
+    res.json({ 
+      success: true, 
+      message: 'TikTok app submitted for review',
+      config: appConfig 
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ================================================================
