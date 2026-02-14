@@ -4,6 +4,7 @@ const cors = require('cors');
 const cron = require('node-cron');
 const { OpenAI } = require('openai');
 const Groq = require('groq-sdk');
+const axios = require('axios');
 
 const app = express();
 app.use(cors());
@@ -131,7 +132,7 @@ app.post('/api/clients/:clientId/connect/facebook', (req, res) => {
   res.json({ success: true, message: 'Facebook connected' });
 });
 
-// Connect Instagram
+// Instagram
 app.post('/api/clients/:clientId/connect/instagram', (req, res) => {
   const { accessToken, accountId, username } = req.body;
   const client = clients.get(req.params.clientId);
@@ -151,6 +152,74 @@ app.post('/api/clients/:clientId/connect/instagram', (req, res) => {
   res.json({ success: true, message: 'Instagram connected' });
 });
 
+// Instagram OAuth Start
+app.get('/api/auth/instagram', (req, res) => {
+  const authUrl = `https://api.instagram.com/oauth/authorize?client_id=${process.env.INSTAGRAM_APP_ID}&redirect_uri=${process.env.BACKEND_URL}/api/auth/instagram/callback&scope=user_profile,user_media&response_type=code`;
+  res.redirect(authUrl);
+});
+
+// Instagram OAuth Callback
+app.get('/api/auth/instagram/callback', async (req, res) => {
+  const { code, state } = req.query;
+  
+  if (!code) {
+    return res.status(400).json({ error: 'Authorization code not provided' });
+  }
+  try {
+    // Exchange code for access token
+    const tokenResponse = await axios.get('https://graph.instagram.com/access_token', {
+      params: {
+        client_id: process.env.INSTAGRAM_APP_ID,
+        client_secret: process.env.INSTAGRAM_APP_SECRET,
+        grant_type: 'authorization_code',
+        redirect_uri: `${process.env.BACKEND_URL}/api/auth/instagram/callback`,
+        code: code
+      }
+    });
+    const { access_token, user_id } = tokenResponse.data;
+    // Get long-lived token
+    const longLivedResponse = await axios.get('https://graph.instagram.com/access_token', {
+      params: {
+        grant_type: 'ig_exchange_token',
+        client_secret: process.env.INSTAGRAM_APP_SECRET,
+        access_token: access_token
+      }
+    });
+    const longLivedToken = longLivedResponse.data.access_token;
+    // Get user profile
+    const profileResponse = await axios.get(`https://graph.instagram.com/${user_id}`, {
+      params: {
+        fields: 'id,username,account_type',
+        access_token: longLivedToken
+      }
+    });
+    // Redirect back to frontend with token data
+    const redirectUrl = `${process.env.FRONTEND_URL}/dashboard?instagram_connected=true&access_token=${longLivedToken}&account_id=${user_id}&username=${profileResponse.data.username}`;
+    res.redirect(redirectUrl);
+  } catch (error) {
+    console.error('Instagram OAuth error:', error.response?.data || error.message);
+    res.redirect(`${process.env.FRONTEND_URL}/dashboard?instagram_error=true`);
+  }
+});
+
+// Instagram Deauthorize Callback
+app.post('/api/auth/instagram/deauthorize', (req, res) => {
+  console.log('Instagram deauthorize callback received:', req.body);
+  res.sendStatus(200);
+});
+
+// Instagram Data Deletion Callback
+app.post('/api/auth/instagram/delete', (req, res) => {
+  const { signed_request } = req.body;
+  console.log('Instagram data deletion request:', signed_request);
+  
+  // Return confirmation URL and code as required by Instagram
+  res.json({
+    url: `${process.env.FRONTEND_URL}/data-deletion`,
+    confirmation_code: `deletion_${Date.now()}`
+  });
+});
+});
 // Connect Twitter/X
 app.post('/api/clients/:clientId/connect/twitter', (req, res) => {
   const { accessToken, accessSecret, username } = req.body;
@@ -169,7 +238,7 @@ app.post('/api/clients/:clientId/connect/twitter', (req, res) => {
   };
   
   res.json({ success: true, message: 'Twitter connected' });
-});
+});/ Conn
 
 // Connect LinkedIn
 app.post('/api/clients/:clientId/connect/linkedin', (req, res) => {
