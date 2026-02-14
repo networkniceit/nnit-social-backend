@@ -1,0 +1,19 @@
+// Add to backend/facebook.js
+
+app.post('/auth/refresh', async (req, res) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token provided' });
+
+  try {
+    // Decode without verifying expiration
+    const decoded = jwt.verify(token, JWT_SECRET, { ignoreExpiration: true });
+    const user = await User.findById(decoded.id);
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    // Issue new token
+    const newToken = jwt.sign({ id: user._id }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token: newToken, user });
+  } catch (err) {
+    res.status(401).json({ error: 'Invalid token' });
+  }
+});

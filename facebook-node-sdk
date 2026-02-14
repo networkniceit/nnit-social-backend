@@ -1,0 +1,11 @@
+const Facebook = require('facebook-node-sdk');
+
+app.use(Facebook.middleware({ appId: 'YOUR_APP_ID', secret: 'YOUR_APP_SECRET' }));
+
+app.post('/auth/facebook', (req, res) => {
+  const { accessToken } = req.body;
+  req.facebook.api('/me', { access_token: accessToken }, (err, data) => {
+    if (err) return res.status(400).json(err);
+    res.json(data);
+  });
+});
