@@ -1,4 +1,4 @@
-require('dotenv').config();
+﻿require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
@@ -154,7 +154,8 @@ app.post('/api/clients/:clientId/connect/instagram', (req, res) => {
 
 // Instagram OAuth Start
 app.get('/api/auth/instagram', (req, res) => {
-  const authUrl = `https://api.instagram.com/oauth/authorize?client_id=${process.env.INSTAGRAM_APP_ID}&redirect_uri=${process.env.BACKEND_URL}/api/auth/instagram/callback&scope=user_profile,user_media&response_type=code`;
+  const redirectUri = encodeURIComponent(`${process.env.BACKEND_URL}/api/auth/instagram/callback`);
+  const authUrl = `https://api.instagram.com/oauth/authorize?client_id=${process.env.INSTAGRAM_APP_ID}&redirect_uri=${redirectUri}&scope=user_profile,user_media&response_type=code`;
   res.redirect(authUrl);
 });
 
@@ -167,12 +168,13 @@ app.get('/api/auth/instagram/callback', async (req, res) => {
   }
   try {
     // Exchange code for access token
+    const redirectUri = `${process.env.BACKEND_URL}/api/auth/instagram/callback`;
     const tokenResponse = await axios.get('https://graph.instagram.com/access_token', {
       params: {
         client_id: process.env.INSTAGRAM_APP_ID,
         client_secret: process.env.INSTAGRAM_APP_SECRET,
         grant_type: 'authorization_code',
-        redirect_uri: `${process.env.BACKEND_URL}/api/auth/instagram/callback`,
+        redirect_uri: redirectUri,
         code: code
       }
     });
@@ -194,11 +196,11 @@ app.get('/api/auth/instagram/callback', async (req, res) => {
       }
     });
     // Redirect back to frontend with token data
-    const redirectUrl = `${process.env.FRONTEND_URL}/dashboard?instagram_connected=true&access_token=${longLivedToken}&account_id=${user_id}&username=${profileResponse.data.username}`;
+    const redirectUrl = `${process.env.FRONTEND_URL}/settings?instagram_connected=true&access_token=${longLivedToken}&account_id=${user_id}&username=${profileResponse.data.username}`;
     res.redirect(redirectUrl);
   } catch (error) {
     console.error('Instagram OAuth error:', error.response?.data || error.message);
-    res.redirect(`${process.env.FRONTEND_URL}/dashboard?instagram_error=true`);
+    res.redirect(`${process.env.FRONTEND_URL}/settings?instagram_error=true`);
   }
 });
 
@@ -218,6 +220,49 @@ app.post('/api/auth/instagram/delete', (req, res) => {
     url: `${process.env.FRONTEND_URL}/data-deletion`,
     confirmation_code: `deletion_${Date.now()}`
   });
+});
+
+// Quick Instagram API test routes (static token/account)
+const PAGE_ACCESS_TOKEN = "EAATUZASHqqAEBQnefueBtGMRgplYQ5ZCMHaX0zSz0AEjRskVYwK76N9CVxZC5jPpzQvZBx2EnxZAylWZC36pfFLT1DG0Sx1w4MJL4sBKGCwFYaOyUFH3a8sGCYh2VOozCZBziaZBrrwdZBtBtuZCpt7vuMWlRC2wslwBnosLBQO1ZCZBQpZB2IlCYvs9KkjFTYuj6MiMV41KUZCFXkzjefxfc9f4p6M9sqISPqVVF2uPb2gU5y7GLqBSj0WHq5EEoZD";
+const INSTAGRAM_ACCOUNT_ID = "61588057627958";
+
+// Test Instagram API
+app.get('/api/instagram/test', async (req, res) => {
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/v18.0/${INSTAGRAM_ACCOUNT_ID}?fields=name,username,profile_picture_url,followers_count,media_count&access_token=${PAGE_ACCESS_TOKEN}`
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Instagram Media
+app.get('/api/instagram/media', async (req, res) => {
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/v18.0/${INSTAGRAM_ACCOUNT_ID}/media?fields=id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count&access_token=${PAGE_ACCESS_TOKEN}`
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get Instagram Insights
+app.get('/api/instagram/insights', async (req, res) => {
+  try {
+    const response = await fetch(
+      `https://graph.facebook.com/v18.0/${INSTAGRAM_ACCOUNT_ID}/insights?metric=impressions,reach,follower_count,profile_views&period=day&access_token=${PAGE_ACCESS_TOKEN}`
+    );
+    const data = await response.json();
+    res.json(data);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Connect Twitter/X
@@ -729,7 +774,7 @@ app.post('/api/auto-reply/:clientId/enable', (req, res) => {
   client.autoReplyRules = rules || {
     keywords: {},
     sentiment: {
-      positive: 'Thank you so much! Ã°Å¸ËœÅ ',
+      positive: 'Thank you so much! ÃƒÂ°Ã…Â¸Ã‹Å“Ã…Â ',
       negative: 'We apologize for any inconvenience. Please DM us so we can help!',
       neutral: 'Thanks for your comment!'
     }
@@ -923,7 +968,7 @@ cron.schedule('* * * * *', async () => {
     const post = scheduledPosts[i];
     
     if (post.status === 'scheduled' && new Date(post.scheduledTime) <= now) {
-      console.log(`Ã°Å¸â€œÂ¤ Publishing post ${post.id} to ${post.platforms.join(', ')}`);
+      console.log(`ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â¤ Publishing post ${post.id} to ${post.platforms.join(', ')}`);
       
       // Simulate publishing
       post.status = 'published';
@@ -1005,21 +1050,7 @@ app.get('/health', (req, res) => {
 const PORT = process.env.PORT || 4000;
 
 app.listen(PORT, () => {
-  console.log(`
-Ã¢â€¢â€Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢â€”
-Ã¢â€¢â€˜         Ã°Å¸Å¡â‚¬ NNIT SOCIAL AUTOMATION API RUNNING Ã°Å¸Å¡â‚¬             Ã¢â€¢â€˜
-Ã¢â€¢Â Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â£
-Ã¢â€¢â€˜  Port:              ${PORT}                                      Ã¢â€¢â€˜
-Ã¢â€¢â€˜  Clients:           ${clients.size}                                       Ã¢â€¢â€˜
-Ã¢â€¢â€˜  Scheduled Posts:   ${scheduledPosts.length}                                       Ã¢â€¢â€˜
-Ã¢â€¢â€˜  Published Posts:   ${publishedPosts.length}                                       Ã¢â€¢â€˜
-Ã¢â€¢â€˜  Auto-Replies:      ${autoReplies.length}                                       Ã¢â€¢â€˜
-Ã¢â€¢Â Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â£
-Ã¢â€¢â€˜  Ã°Å¸â€œÂ§ Contact: networkniceit@gmail.com                          Ã¢â€¢â€˜
-Ã¢â€¢â€˜  Ã°Å¸â€˜Â¤ Owner: Solomon Omomeje Ayodele                            Ã¢â€¢â€˜
-Ã¢â€¢â€˜  Ã°Å¸ÂÂ¢ NNIT - Network Nice IT Tec                                Ã¢â€¢â€˜
-Ã¢â€¢Å¡Ã¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢ÂÃ¢â€¢Â
-  `);
+  console.log(`API Server running on port ${PORT}`);
 });
 
 module.exports = app;
