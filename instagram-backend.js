@@ -1,6 +1,7 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 
@@ -69,9 +70,19 @@ app.get('/api/instagram/insights', async (req, res) => {
   }
 });
 
+// Privacy Policy route
+app.get('/privacy-policy', (req, res) => {
+  res.sendFile(path.join(__dirname, 'privacy-policy.html'));
+});
+
+// Contact route
+app.get('/contact', (req, res) => {
+  res.sendFile(path.join(__dirname, 'contact.html'));
+});
+
 // Health check
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     status: 'NNIT Instagram API Running',
     endpoints: [
       '/api/instagram/test',
