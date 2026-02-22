@@ -55,7 +55,7 @@ app.get('/api/instagram/media', async (req, res) => {
 app.get('/api/instagram/insights', async (req, res) => {
   try {
     const axios = require('axios');
-    const url = `https://graph.facebook.com/v18.0/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/insights?metric=impressions,reach,profile_views&period=day&access_token=${PAGE_ACCESS_TOKEN}`;
+    const url = `https://graph.facebook.com/v18.0/${INSTAGRAM_BUSINESS_ACCOUNT_ID}/insights?metric=reach,profile_views&period=day&access_token=${PAGE_ACCESS_TOKEN}`;
     
     const response = await axios.get(url);
     res.json({
@@ -82,7 +82,7 @@ app.get('/contact', (req, res) => {
 
 // Health check
 app.get('/', (req, res) => {
-  res.json({
+  res.json({ 
     status: 'NNIT Instagram API Running',
     endpoints: [
       '/api/instagram/test',
