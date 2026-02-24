@@ -2,7 +2,14 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const { Pool } = require('pg');
 const app = express();
+
+// Database connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: false
+});
 
 // Middleware
 app.use(cors());
@@ -142,6 +149,42 @@ app.get('/api/auth/instagram/callback', async (req, res) => {
   } catch (error) {
     console.error('OAuth error:', error.response?.data || error.message);
     res.redirect(`${process.env.FRONTEND_URL}/settings?error=auth_failed`);
+  }
+});
+
+// Save Instagram credentials to database
+app.post('/api/auth/instagram/save', async (req, res) => {
+  try {
+    const { userId, accessToken, instagramAccountId, username, pageId, pageAccessToken } = req.body;
+
+    const query = `
+      INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (user_id, platform) 
+      DO UPDATE SET 
+        access_token = $3,
+        instagram_account_id = $4,
+        instagram_account_name = $5,
+        page_id = $6,
+        page_access_token = $7,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING *
+    `;
+
+    const result = await pool.query(query, [
+      userId,
+      'instagram',
+      accessToken,
+      instagramAccountId,
+      username,
+      pageId,
+      pageAccessToken
+    ]);
+
+    res.json({ success: true, account: result.rows[0] });
+  } catch (error) {
+    console.error('Error saving Instagram credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
