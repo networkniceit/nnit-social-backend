@@ -5,10 +5,17 @@ const cron = require('node-cron');
 const { OpenAI } = require('openai');
 const Groq = require('groq-sdk');
 const axios = require('axios');
+const { Pool } = require('pg');
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+
+// Database connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
 
 // Initialize AI engines
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
@@ -154,50 +161,109 @@ app.post('/api/clients/:clientId/connect/instagram', (req, res) => {
 
 // Instagram OAuth Start
 app.get('/api/auth/instagram', (req, res) => {
-  const redirectUri = encodeURIComponent(`${process.env.BACKEND_URL}/api/auth/instagram/callback`);
-  const authUrl = `https://api.instagram.com/oauth/authorize?client_id=${process.env.INSTAGRAM_APP_ID}&redirect_uri=${redirectUri}&scope=user_profile,user_media&response_type=code`;
+  const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID;
+  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/instagram/callback`;
+
+  const authUrl = `https://www.facebook.com/v18.0/dialog/oauth?` +
+    `client_id=${FACEBOOK_APP_ID}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&scope=instagram_basic,instagram_manage_insights,pages_show_list,pages_read_engagement` +
+    `&response_type=code`;
+
   res.redirect(authUrl);
 });
 
 // Instagram OAuth Callback
 app.get('/api/auth/instagram/callback', async (req, res) => {
-  const { code, state } = req.query;
+  const { code } = req.query;
   
   if (!code) {
-    return res.status(400).json({ error: 'Authorization code not provided' });
+    return res.redirect(`${process.env.FRONTEND_URL}/settings?error=no_code`);
   }
+
   try {
+    const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID;
+    const FACEBOOK_APP_SECRET = process.env.FACEBOOK_APP_SECRET;
+    const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/instagram/callback`;
+
     // Exchange code for access token
-    const redirectUri = `${process.env.BACKEND_URL}/api/auth/instagram/callback`;
-    const tokenResponse = await axios.get('https://graph.instagram.com/access_token', {
-      params: {
-        client_id: process.env.INSTAGRAM_APP_ID,
-        client_secret: process.env.INSTAGRAM_APP_SECRET,
-        grant_type: 'authorization_code',
-        redirect_uri: redirectUri,
-        code: code
-      }
-    });
-    const { access_token, user_id } = tokenResponse.data;
-    // Get long-lived token
-    const longLivedResponse = await axios.get('https://graph.instagram.com/access_token', {
-      params: {
-        grant_type: 'ig_exchange_token',
-        client_secret: process.env.INSTAGRAM_APP_SECRET,
-        access_token: access_token
-      }
-    });
-    const longLivedToken = longLivedResponse.data.access_token;
-    // Get user profile
-    const profileResponse = await axios.get(`https://graph.instagram.com/${user_id}`, {
-      params: {
-        fields: 'id,username,account_type',
-        access_token: longLivedToken
-      }
-    });
-    // Redirect back to frontend with token data
-    const redirectUrl = `${process.env.FRONTEND_URL}/settings?instagram_connected=true&access_token=${longLivedToken}&account_id=${user_id}&username=${profileResponse.data.username}`;
-    res.redirect(redirectUrl);
+    const tokenUrl = `https://graph.facebook.com/v18.0/oauth/access_token?` +
+      `client_id=${FACEBOOK_APP_ID}` +
+      `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+      `&client_secret=${FACEBOOK_APP_SECRET}` +
+      `&code=${code}`;
+
+    const tokenResponse = await axios.get(tokenUrl);
+    const accessToken = tokenResponse.data.access_token;
+
+    // Get user's pages
+    const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}`;
+    const pagesResponse = await axios.get(pagesUrl);
+
+    if (!pagesResponse.data.data || pagesResponse.data.data.length === 0) {
+      return res.redirect(`${process.env.FRONTEND_URL}/settings?error=no_pages`);
+    }
+
+    const pageAccessToken = pagesResponse.data.data[0].access_token;
+    const pageId = pagesResponse.data.data[0].id;
+
+    const igAccountUrl = `https://graph.facebook.com/v18.0/${pageId}?fields=instagram_business_account&access_token=${pageAccessToken}`;
+    const igAccountResponse = await axios.get(igAccountUrl);
+
+    if (!igAccountResponse.data.instagram_business_account) {
+      return res.redirect(`${process.env.FRONTEND_URL}/settings?error=no_instagram`);
+    }
+
+    const instagramAccountId = igAccountResponse.data.instagram_business_account.id;
+
+    const usernameUrl = `https://graph.facebook.com/v18.0/${instagramAccountId}?fields=username&access_token=${pageAccessToken}`;
+    const usernameResponse = await axios.get(usernameUrl);
+    const username = usernameResponse.data.username;
+
+    // Auto-create table if not exists
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        platform VARCHAR(50) NOT NULL,
+        access_token TEXT,
+        instagram_account_id VARCHAR(100),
+        instagram_account_name VARCHAR(100),
+        page_id VARCHAR(100),
+        page_access_token TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, platform)
+      )
+    `);
+
+    // Save directly to DB from callback
+    try {
+      await pool.query(`
+        INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
+        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        ON CONFLICT (user_id, platform)
+        DO UPDATE SET
+          access_token = $3,
+          instagram_account_id = $4,
+          instagram_account_name = $5,
+          page_id = $6,
+          page_access_token = $7,
+          updated_at = CURRENT_TIMESTAMP
+      `, [1, 'instagram', accessToken, instagramAccountId, username, pageId, pageAccessToken]);
+    } catch (dbError) {
+      console.error('DB save error in callback:', dbError.message);
+    }
+
+    // Redirect to frontend with all credentials
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?` +
+      `instagram_connected=true` +
+      `&access_token=${pageAccessToken}` +
+      `&account_id=${instagramAccountId}` +
+      `&username=${username}` +
+      `&user_id=1`
+    );
+
   } catch (error) {
     console.error('Instagram OAuth error:', error.response?.data || error.message);
     res.redirect(`${process.env.FRONTEND_URL}/settings?instagram_error=true`);
@@ -215,11 +281,48 @@ app.post('/api/auth/instagram/delete', (req, res) => {
   const { signed_request } = req.body;
   console.log('Instagram data deletion request:', signed_request);
   
-  // Return confirmation URL and code as required by Instagram
   res.json({
     url: `${process.env.FRONTEND_URL}/data-deletion`,
     confirmation_code: `deletion_${Date.now()}`
   });
+});
+
+// Save Instagram credentials to database
+app.post('/api/auth/instagram/save', async (req, res) => {
+  try {
+    const { userId, accessToken, instagramAccountId, username, pageId, pageAccessToken } = req.body;
+
+    const resolvedUserId = userId || 1;
+
+    const query = `
+      INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (user_id, platform) 
+      DO UPDATE SET 
+        access_token = $3,
+        instagram_account_id = $4,
+        instagram_account_name = $5,
+        page_id = $6,
+        page_access_token = $7,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING *
+    `;
+
+    const result = await pool.query(query, [
+      resolvedUserId,
+      'instagram',
+      accessToken,
+      instagramAccountId,
+      username,
+      pageId,
+      pageAccessToken
+    ]);
+
+    res.json({ success: true, account: result.rows[0] });
+  } catch (error) {
+    console.error('Error saving Instagram credentials:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Quick Instagram API test routes (static token/account)
@@ -252,16 +355,21 @@ app.get('/api/instagram/media', async (req, res) => {
   }
 });
 
-// Get Instagram Insights
-app.get('/api/instagram/insights', async (req, res) => {
+// Load Instagram credentials from database
+app.get('/api/auth/instagram/load', async (req, res) => {
   try {
-    const response = await fetch(
-      `https://graph.facebook.com/v18.0/${INSTAGRAM_ACCOUNT_ID}/insights?metric=impressions,reach,follower_count,profile_views&period=day&access_token=${PAGE_ACCESS_TOKEN}`
+    const userId = req.query.userId || 1;
+    const result = await pool.query(
+      `SELECT * FROM social_accounts WHERE user_id = $1 AND platform = 'instagram'`,
+      [userId]
     );
-    const data = await response.json();
-    res.json(data);
+    if (result.rows.length > 0) {
+      res.json({ success: true, account: result.rows[0] });
+    } else {
+      res.json({ success: false, account: null });
+    }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -635,7 +743,6 @@ app.post('/api/posts/:postId/publish', async (req, res) => {
   
   const post = scheduledPosts[postIndex];
   
-  // Simulate publishing to platforms
   post.status = 'published';
   post.publishedAt = new Date().toISOString();
   post.results = {};
@@ -648,11 +755,9 @@ app.post('/api/posts/:postId/publish', async (req, res) => {
     };
   });
   
-  // Move to published posts
   publishedPosts.push(post);
   scheduledPosts.splice(postIndex, 1);
   
-  // Update client stats
   const client = clients.get(post.clientId);
   if (client) {
     client.stats.totalPosts++;
@@ -675,7 +780,6 @@ app.get('/api/analytics/:clientId', (req, res) => {
   
   const clientPosts = publishedPosts.filter(p => p.clientId === req.params.clientId);
   
-  // Calculate platform distribution
   const platformStats = {};
   clientPosts.forEach(post => {
     post.platforms.forEach(platform => {
@@ -683,7 +787,6 @@ app.get('/api/analytics/:clientId', (req, res) => {
     });
   });
   
-  // Calculate posting frequency
   const last30Days = clientPosts.filter(p => {
     const postDate = new Date(p.publishedAt);
     const thirtyDaysAgo = new Date();
@@ -719,9 +822,8 @@ app.get('/api/analytics/:clientId', (req, res) => {
 
 // Get engagement metrics
 app.get('/api/analytics/:clientId/engagement', (req, res) => {
-  const { timeframe } = req.query; // day, week, month
+  const { timeframe } = req.query;
   
-  // Simulated engagement data
   const engagement = {
     likes: Math.floor(Math.random() * 1000),
     comments: Math.floor(Math.random() * 200),
@@ -735,7 +837,6 @@ app.get('/api/analytics/:clientId/engagement', (req, res) => {
 
 // Get growth metrics
 app.get('/api/analytics/:clientId/growth', (req, res) => {
-  // Simulated growth data
   const growth = {
     followers: {
       current: Math.floor(Math.random() * 10000),
@@ -774,7 +875,7 @@ app.post('/api/auto-reply/:clientId/enable', (req, res) => {
   client.autoReplyRules = rules || {
     keywords: {},
     sentiment: {
-      positive: 'Thank you so much! ÃƒÂ°Ã…Â¸Ã‹Å“Ã…Â ',
+      positive: 'Thank you so much! 🙌',
       negative: 'We apologize for any inconvenience. Please DM us so we can help!',
       neutral: 'Thanks for your comment!'
     }
@@ -793,7 +894,6 @@ app.post('/api/auto-reply/:clientId/process', async (req, res) => {
       return res.json({ success: false, message: 'Auto-reply not enabled' });
     }
     
-    // Generate AI reply
     const aiReply = await openai.chat.completions.create({
       model: 'gpt-4',
       messages: [{
@@ -810,7 +910,6 @@ Keep it brief (max 30 words), friendly, and on-brand.`
     
     const reply = aiReply.choices[0].message.content.trim();
     
-    // Store the auto-reply
     autoReplies.push({
       id: `reply_${Date.now()}`,
       clientId: req.params.clientId,
@@ -852,7 +951,6 @@ app.get('/api/calendar/:clientId', (req, res) => {
     return true;
   });
   
-  // Group by date
   const calendar = {};
   posts.forEach(post => {
     const date = new Date(post.scheduledTime).toISOString().split('T')[0];
@@ -874,10 +972,8 @@ app.get('/api/insights/:clientId/best-times', async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
     
-    // Analyze past posts and generate recommendations
     const clientPosts = publishedPosts.filter(p => p.clientId === req.params.clientId);
     
-    // Use AI to analyze patterns
     const prompt = `Based on industry best practices for ${client.industry}, suggest the 3 best times to post on social media for maximum engagement.
 
 Return as JSON: {
@@ -968,9 +1064,8 @@ cron.schedule('* * * * *', async () => {
     const post = scheduledPosts[i];
     
     if (post.status === 'scheduled' && new Date(post.scheduledTime) <= now) {
-      console.log(`ÃƒÂ°Ã…Â¸Ã¢â‚¬Å“Ã‚Â¤ Publishing post ${post.id} to ${post.platforms.join(', ')}`);
+      console.log(`🔤 Publishing post ${post.id} to ${post.platforms.join(', ')}`);
       
-      // Simulate publishing
       post.status = 'published';
       post.publishedAt = new Date().toISOString();
       post.results = {};
@@ -983,11 +1078,9 @@ cron.schedule('* * * * *', async () => {
         };
       });
       
-      // Move to published
       publishedPosts.push(post);
       scheduledPosts.splice(i, 1);
       
-      // Update client stats
       const client = clients.get(post.clientId);
       if (client) {
         client.stats.totalPosts++;

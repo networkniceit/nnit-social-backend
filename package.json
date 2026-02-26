@@ -1,9 +1,9 @@
 {
   "name": "nnit-social-backend",
   "version": "1.0.0",
-  "main": "instagram-backend.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node instagram-backend.js"
+    "start": "node server.js"
   },
   "dependencies": {
     "axios": "^1.13.4",
@@ -17,6 +17,7 @@
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^9.1.6",
     "node-cron": "^3.0.2",
+    "openai": "^4.0.0",
     "pg": "^8.11.3",
     "react-facebook-login": "^4.1.1"
   }
