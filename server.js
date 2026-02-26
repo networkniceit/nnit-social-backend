@@ -266,7 +266,7 @@ app.get('/api/auth/instagram/callback', async (req, res) => {
 
   } catch (error) {
     console.error('Instagram OAuth error:', error.response?.data || error.message);
-    res.redirect(`${process.env.FRONTEND_URL}/settings?instagram_error=true`);
+    res.redirect(`${process.env.FRONTEND_URL}/settings?instagram_error=true&reason=${encodeURIComponent(error.response?.data?.error?.message || error.message)}`);
   }
 });
 
@@ -293,6 +293,21 @@ app.post('/api/auth/instagram/save', async (req, res) => {
     const { userId, accessToken, instagramAccountId, username, pageId, pageAccessToken } = req.body;
 
     const resolvedUserId = userId || 1;
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        platform VARCHAR(50) NOT NULL,
+        access_token TEXT,
+        instagram_account_id VARCHAR(100),
+        instagram_account_name VARCHAR(100),
+        page_id VARCHAR(100),
+        page_access_token TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, platform)
+      )
+    `);
 
     const query = `
       INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
@@ -359,6 +374,22 @@ app.get('/api/instagram/media', async (req, res) => {
 app.get('/api/auth/instagram/load', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        platform VARCHAR(50) NOT NULL,
+        access_token TEXT,
+        instagram_account_id VARCHAR(100),
+        instagram_account_name VARCHAR(100),
+        page_id VARCHAR(100),
+        page_access_token TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, platform)
+      )
+    `);
+
     const result = await pool.query(
       `SELECT * FROM social_accounts WHERE user_id = $1 AND platform = 'instagram'`,
       [userId]
@@ -369,6 +400,7 @@ app.get('/api/auth/instagram/load', async (req, res) => {
       res.json({ success: false, account: null });
     }
   } catch (error) {
+    console.error('Load error:', error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });
