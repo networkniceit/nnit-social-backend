@@ -1004,8 +1004,6 @@ app.get('/api/insights/:clientId/best-times', async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
     
-    const clientPosts = publishedPosts.filter(p => p.clientId === req.params.clientId);
-    
     const prompt = `Based on industry best practices for ${client.industry}, suggest the 3 best times to post on social media for maximum engagement.
 
 Return as JSON: {
@@ -1157,15 +1155,6 @@ app.get('/api/dashboard/stats', (req, res) => {
 // ================================================================
 // HEALTH CHECK
 // ================================================================
-
-app.get('/api/fix-db', async (req, res) => {
-  try {
-    await pool.query('DROP TABLE IF EXISTS social_accounts');
-    res.json({ success: true, message: 'Table dropped. Will recreate on next OAuth.' });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 app.get('/health', (req, res) => {
   res.json({
