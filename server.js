@@ -1522,6 +1522,10 @@ app.delete('/api/auth/facebook/disconnect', async (req, res) => {
   }
 });
 
+app.get('/privacy', (req, res) => {
+  res.redirect('https://nnit-social-frontend-gil7.vercel.app/privacy');
+});
+
 // ================================================================
 // HEALTH CHECK
 // ================================================================
