@@ -1527,6 +1527,276 @@ app.get('/privacy', (req, res) => {
 });
 
 // ================================================================
+// TIKTOK OAuth & INTEGRATION ROUTES
+// Add these routes to server.js before the /health route
+// ================================================================
+
+// TikTok OAuth Start
+app.get('/api/auth/tiktok', (req, res) => {
+  const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
+  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/tiktok/callback`;
+  const csrfState = Math.random().toString(36).substring(2);
+
+  const authUrl = `https://www.tiktok.com/v2/auth/authorize?` +
+    `client_key=${TIKTOK_CLIENT_KEY}` +
+    `&scope=user.info.basic,video.list,video.publish` +
+    `&response_type=code` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&state=${csrfState}`;
+
+  res.redirect(authUrl);
+});
+
+// TikTok OAuth Callback
+app.get('/api/auth/tiktok/callback', async (req, res) => {
+  const { code, error } = req.query;
+
+  if (error || !code) {
+    return res.redirect(`${process.env.FRONTEND_URL}/settings?tiktok_error=true&reason=${encodeURIComponent(error || 'no_code')}`);
+  }
+
+  try {
+    const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
+    const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET;
+    const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/tiktok/callback`;
+
+    // Exchange code for access token
+    const tokenResponse = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', 
+      new URLSearchParams({
+        client_key: TIKTOK_CLIENT_KEY,
+        client_secret: TIKTOK_CLIENT_SECRET,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: REDIRECT_URI
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const { access_token, open_id, refresh_token } = tokenResponse.data;
+
+    // Get user info
+    const userResponse = await axios.get('https://open.tiktokapis.com/v2/user/info/', {
+      headers: { 'Authorization': `Bearer ${access_token}` },
+      params: { fields: 'open_id,union_id,avatar_url,display_name,follower_count,following_count,video_count' }
+    });
+
+    const userInfo = userResponse.data.data.user;
+    const displayName = userInfo.display_name || 'TikTok User';
+
+    // Save to DB
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        platform VARCHAR(50) NOT NULL,
+        access_token TEXT,
+        instagram_account_id VARCHAR(100),
+        instagram_account_name VARCHAR(100),
+        page_id VARCHAR(100),
+        page_access_token TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, platform)
+      )
+    `);
+
+    await pool.query(`
+      INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (user_id, platform)
+      DO UPDATE SET
+        access_token = $3,
+        instagram_account_id = $4,
+        instagram_account_name = $5,
+        page_id = $6,
+        page_access_token = $7,
+        updated_at = CURRENT_TIMESTAMP
+    `, [1, 'tiktok', access_token, open_id, displayName, open_id, refresh_token]);
+
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?` +
+      `tiktok_connected=true` +
+      `&tiktok_open_id=${open_id}` +
+      `&tiktok_username=${encodeURIComponent(displayName)}` +
+      `&tiktok_token=${access_token}`
+    );
+
+  } catch (error) {
+    console.error('TikTok OAuth error:', error.response?.data || error.message);
+    res.redirect(`${process.env.FRONTEND_URL}/settings?tiktok_error=true&reason=${encodeURIComponent(error.response?.data?.message || error.message)}`);
+  }
+});
+
+// Load TikTok credentials from DB
+app.get('/api/auth/tiktok/load', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        platform VARCHAR(50) NOT NULL,
+        access_token TEXT,
+        instagram_account_id VARCHAR(100),
+        instagram_account_name VARCHAR(100),
+        page_id VARCHAR(100),
+        page_access_token TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, platform)
+      )
+    `);
+
+    const result = await pool.query(
+      `SELECT * FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
+      [userId]
+    );
+
+    if (result.rows.length > 0) {
+      res.json({ success: true, account: result.rows[0] });
+    } else {
+      res.json({ success: false, account: null });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Disconnect TikTok
+app.delete('/api/auth/tiktok/disconnect', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    await pool.query(
+      `DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
+      [userId]
+    );
+    res.json({ success: true, message: 'TikTok disconnected' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ================================================================
+// TIKTOK VIDEO POSTING
+// ================================================================
+
+// Upload video to TikTok (URL-based)
+app.post('/api/tiktok/post/video', async (req, res) => {
+  try {
+    const { videoUrl, caption, userId } = req.body;
+    const resolvedUserId = userId || 1;
+
+    const dbResult = await pool.query(
+      `SELECT access_token, instagram_account_id FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
+      [resolvedUserId]
+    );
+
+    if (dbResult.rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'TikTok not connected' });
+    }
+
+    const { access_token, instagram_account_id: open_id } = dbResult.rows[0];
+
+    // Initialize upload
+    const initResponse = await axios.post(
+      'https://open.tiktokapis.com/v2/post/publish/video/init/',
+      {
+        post_info: {
+          title: caption || '',
+          privacy_level: 'PUBLIC_TO_EVERYONE',
+          disable_duet: false,
+          disable_comment: false,
+          disable_stitch: false,
+        },
+        source_info: {
+          source: 'PULL_FROM_URL',
+          video_url: videoUrl
+        }
+      },
+      { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
+    );
+
+    res.json({ success: true, publishId: initResponse.data.data?.publish_id });
+  } catch (error) {
+    console.error('TikTok post error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.response?.data?.error?.message || error.message });
+  }
+});
+
+// ================================================================
+// TIKTOK ANALYTICS
+// ================================================================
+
+// Get TikTok user analytics
+app.get('/api/tiktok/analytics', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+
+    const dbResult = await pool.query(
+      `SELECT access_token, instagram_account_name FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
+      [userId]
+    );
+
+    if (dbResult.rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'TikTok not connected' });
+    }
+
+    const { access_token, instagram_account_name: displayName } = dbResult.rows[0];
+
+    // Get user info with stats
+    const userResponse = await axios.get('https://open.tiktokapis.com/v2/user/info/', {
+      headers: { 'Authorization': `Bearer ${access_token}` },
+      params: { fields: 'open_id,display_name,follower_count,following_count,video_count,profile_deep_link' }
+    });
+
+    const userInfo = userResponse.data.data.user;
+
+    res.json({
+      success: true,
+      username: userInfo.display_name || displayName,
+      followerCount: userInfo.follower_count || 0,
+      followingCount: userInfo.following_count || 0,
+      videoCount: userInfo.video_count || 0,
+      profileLink: userInfo.profile_deep_link || ''
+    });
+  } catch (error) {
+    console.error('TikTok analytics error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.response?.data?.error?.message || error.message });
+  }
+});
+
+// Get TikTok video list
+app.get('/api/tiktok/videos', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+
+    const dbResult = await pool.query(
+      `SELECT access_token FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
+      [userId]
+    );
+
+    if (dbResult.rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'TikTok not connected' });
+    }
+
+    const { access_token } = dbResult.rows[0];
+
+    const response = await axios.post(
+      'https://open.tiktokapis.com/v2/video/list/',
+      { max_count: 20 },
+      {
+        headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' },
+        params: { fields: 'id,title,create_time,cover_image_url,share_url,view_count,like_count,comment_count,share_count' }
+      }
+    );
+
+    res.json({ success: true, videos: response.data.data?.videos || [] });
+  } catch (error) {
+    console.error('TikTok videos error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.response?.data?.error?.message || error.message });
+  }
+});
+tiktok-routes.js
+// ================================================================
 // HEALTH CHECK
 // ================================================================
 
