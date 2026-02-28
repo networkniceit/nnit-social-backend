@@ -1795,7 +1795,7 @@ app.get('/api/tiktok/videos', async (req, res) => {
     res.status(500).json({ success: false, error: error.response?.data?.error?.message || error.message });
   }
 });
-tiktok-routes.js
+
 // ================================================================
 // HEALTH CHECK
 // ================================================================
