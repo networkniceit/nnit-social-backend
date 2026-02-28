@@ -1539,7 +1539,7 @@ app.get('/api/auth/tiktok', (req, res) => {
 
   const authUrl = `https://www.tiktok.com/v2/auth/authorize?` +
     `client_key=${TIKTOK_CLIENT_KEY}` +
-    `&scope=user.info.basic,video.list,video.publish` +
+    `&scope=user.info.basic,video.list,video.upload` +
     `&response_type=code` +
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
     `&state=${csrfState}`;
