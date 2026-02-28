@@ -1802,6 +1802,233 @@ app.get('/api/tiktok/videos', async (req, res) => {
 });
 
 // ================================================================
+// TWITTER/X OAuth & INTEGRATION ROUTES
+// ================================================================
+
+// Twitter OAuth Start
+app.get('/api/auth/twitter', (req, res) => {
+  const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
+  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/twitter/callback`;
+
+  // Generate code verifier and challenge for PKCE
+  const codeVerifier = Math.random().toString(36).repeat(3).substring(0, 43);
+  const state = Math.random().toString(36).substring(2);
+
+  // Store verifier in a simple way (use session/DB in production)
+  app.locals.twitterCodeVerifier = codeVerifier;
+  app.locals.twitterState = state;
+
+  const authUrl = `https://twitter.com/i/oauth2/authorize?` +
+    `response_type=code` +
+    `&client_id=${TWITTER_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&scope=tweet.read%20tweet.write%20users.read%20offline.access` +
+    `&state=${state}` +
+    `&code_challenge=${codeVerifier}` +
+    `&code_challenge_method=plain`;
+
+  res.redirect(authUrl);
+});
+
+// Twitter OAuth Callback
+app.get('/api/auth/twitter/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+
+  if (error || !code) {
+    return res.redirect(`${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=${encodeURIComponent(error || 'no_code')}`);
+  }
+
+  try {
+    const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
+    const TWITTER_CLIENT_SECRET = process.env.TWITTER_CLIENT_SECRET;
+    const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/twitter/callback`;
+    const codeVerifier = app.locals.twitterCodeVerifier;
+
+    // Exchange code for access token
+    const tokenResponse = await axios.post(
+      'https://api.twitter.com/2/oauth2/token',
+      new URLSearchParams({
+        code,
+        grant_type: 'authorization_code',
+        client_id: TWITTER_CLIENT_ID,
+        redirect_uri: REDIRECT_URI,
+        code_verifier: codeVerifier
+      }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${Buffer.from(`${TWITTER_CLIENT_ID}:${TWITTER_CLIENT_SECRET}`).toString('base64')}`
+        }
+      }
+    );
+
+    const { access_token, refresh_token } = tokenResponse.data;
+
+    // Get user info
+    const userResponse = await axios.get('https://api.twitter.com/2/users/me', {
+      headers: { 'Authorization': `Bearer ${access_token}` },
+      params: { 'user.fields': 'id,name,username,profile_image_url,public_metrics' }
+    });
+
+    const user = userResponse.data.data;
+    const username = user.username;
+    const displayName = user.name;
+    const twitterUserId = user.id;
+
+    // Save to DB
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        platform VARCHAR(50) NOT NULL,
+        access_token TEXT,
+        instagram_account_id VARCHAR(100),
+        instagram_account_name VARCHAR(100),
+        page_id VARCHAR(100),
+        page_access_token TEXT,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, platform)
+      )
+    `);
+
+    await pool.query(`
+      INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (user_id, platform)
+      DO UPDATE SET
+        access_token = $3,
+        instagram_account_id = $4,
+        instagram_account_name = $5,
+        page_id = $6,
+        page_access_token = $7,
+        updated_at = CURRENT_TIMESTAMP
+    `, [1, 'twitter', access_token, twitterUserId, displayName, username, refresh_token || '']);
+
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?` +
+      `twitter_connected=true` +
+      `&twitter_username=${encodeURIComponent(username)}` +
+      `&twitter_name=${encodeURIComponent(displayName)}` +
+      `&twitter_id=${twitterUserId}`
+    );
+
+  } catch (error) {
+    console.error('Twitter OAuth error:', error.response?.data || error.message);
+    res.redirect(`${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=${encodeURIComponent(JSON.stringify(error.response?.data) || error.message)}`);
+  }
+});
+
+// Load Twitter credentials from DB
+app.get('/api/auth/twitter/load', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+
+    const result = await pool.query(
+      `SELECT * FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
+      [userId]
+    );
+
+    if (result.rows.length > 0) {
+      res.json({ success: true, account: result.rows[0] });
+    } else {
+      res.json({ success: false, account: null });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// Disconnect Twitter
+app.delete('/api/auth/twitter/disconnect', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    await pool.query(
+      `DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
+      [userId]
+    );
+    res.json({ success: true, message: 'Twitter disconnected' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ================================================================
+// TWITTER POSTING
+// ================================================================
+
+// Post a tweet
+app.post('/api/twitter/post', async (req, res) => {
+  try {
+    const { text, userId } = req.body;
+    const resolvedUserId = userId || 1;
+
+    const dbResult = await pool.query(
+      `SELECT access_token FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
+      [resolvedUserId]
+    );
+
+    if (dbResult.rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'Twitter not connected' });
+    }
+
+    const { access_token } = dbResult.rows[0];
+
+    const response = await axios.post(
+      'https://api.twitter.com/2/tweets',
+      { text },
+      { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
+    );
+
+    res.json({ success: true, tweetId: response.data.data.id });
+  } catch (error) {
+    console.error('Twitter post error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.response?.data?.detail || error.message });
+  }
+});
+
+// ================================================================
+// TWITTER ANALYTICS
+// ================================================================
+
+app.get('/api/twitter/analytics', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+
+    const dbResult = await pool.query(
+      `SELECT access_token, instagram_account_name, page_id FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
+      [userId]
+    );
+
+    if (dbResult.rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'Twitter not connected' });
+    }
+
+    const { access_token, instagram_account_name: displayName, page_id: username } = dbResult.rows[0];
+
+    const userResponse = await axios.get('https://api.twitter.com/2/users/me', {
+      headers: { 'Authorization': `Bearer ${access_token}` },
+      params: { 'user.fields': 'public_metrics,profile_image_url' }
+    });
+
+    const user = userResponse.data.data;
+    const metrics = user.public_metrics || {};
+
+    res.json({
+      success: true,
+      username: username || displayName,
+      displayName,
+      followerCount: metrics.followers_count || 0,
+      followingCount: metrics.following_count || 0,
+      tweetCount: metrics.tweet_count || 0,
+      profileImageUrl: user.profile_image_url || ''
+    });
+  } catch (error) {
+    console.error('Twitter analytics error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.response?.data?.detail || error.message });
+  }
+});
+
+// ================================================================
 // HEALTH CHECK
 // ================================================================
 
