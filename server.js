@@ -1561,28 +1561,28 @@ app.get('/api/auth/tiktok/callback', async (req, res) => {
     const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/tiktok/callback`;
 
     // Exchange code for access token
-   const tokenResponse = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', 
-  new URLSearchParams({
-    client_key: TIKTOK_CLIENT_KEY,
-    client_secret: TIKTOK_CLIENT_SECRET,
-    code,
-    grant_type: 'authorization_code',
-    redirect_uri: REDIRECT_URI
-  }).toString(),
-  { 
-    headers: { 
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Authorization': `Basic ${Buffer.from(`${TIKTOK_CLIENT_KEY}:${TIKTOK_CLIENT_SECRET}`).toString('base64')}`
-    } 
-  }
-);
+    const tokenResponse = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', 
+      new URLSearchParams({
+        client_key: TIKTOK_CLIENT_KEY,
+        client_secret: TIKTOK_CLIENT_SECRET,
+        code,
+        grant_type: 'authorization_code',
+        redirect_uri: REDIRECT_URI
+      }).toString(),
+      { 
+        headers: { 
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${Buffer.from(`${TIKTOK_CLIENT_KEY}:${TIKTOK_CLIENT_SECRET}`).toString('base64')}`
+        } 
+      }
+    );
 
     const { access_token, open_id, refresh_token } = tokenResponse.data;
 
-    // Get user info
+    // Get user info - only basic fields allowed in sandbox
     const userResponse = await axios.get('https://open.tiktokapis.com/v2/user/info/', {
       headers: { 'Authorization': `Bearer ${access_token}` },
-      params: { fields: 'open_id,union_id,avatar_url,display_name,follower_count,following_count,video_count' }
+      params: { fields: 'open_id,union_id,avatar_url,display_name' }
     });
 
     const userInfo = userResponse.data.data.user;
@@ -1747,10 +1747,10 @@ app.get('/api/tiktok/analytics', async (req, res) => {
 
     const { access_token, instagram_account_name: displayName } = dbResult.rows[0];
 
-    // Get user info with stats
+    // Get user info - only basic fields
     const userResponse = await axios.get('https://open.tiktokapis.com/v2/user/info/', {
       headers: { 'Authorization': `Bearer ${access_token}` },
-      params: { fields: 'open_id,display_name,follower_count,following_count,video_count,profile_deep_link' }
+      params: { fields: 'open_id,display_name,avatar_url' }
     });
 
     const userInfo = userResponse.data.data.user;
@@ -1758,10 +1758,10 @@ app.get('/api/tiktok/analytics', async (req, res) => {
     res.json({
       success: true,
       username: userInfo.display_name || displayName,
-      followerCount: userInfo.follower_count || 0,
-      followingCount: userInfo.following_count || 0,
-      videoCount: userInfo.video_count || 0,
-      profileLink: userInfo.profile_deep_link || ''
+      followerCount: 0,
+      followingCount: 0,
+      videoCount: 0,
+      profileLink: ''
     });
   } catch (error) {
     console.error('TikTok analytics error:', error.response?.data || error.message);
