@@ -1561,16 +1561,21 @@ app.get('/api/auth/tiktok/callback', async (req, res) => {
     const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/tiktok/callback`;
 
     // Exchange code for access token
-    const tokenResponse = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', 
-      new URLSearchParams({
-        client_key: TIKTOK_CLIENT_KEY,
-        client_secret: TIKTOK_CLIENT_SECRET,
-        code,
-        grant_type: 'authorization_code',
-        redirect_uri: REDIRECT_URI
-      }).toString(),
-      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
-    );
+   const tokenResponse = await axios.post('https://open.tiktokapis.com/v2/oauth/token/', 
+  new URLSearchParams({
+    client_key: TIKTOK_CLIENT_KEY,
+    client_secret: TIKTOK_CLIENT_SECRET,
+    code,
+    grant_type: 'authorization_code',
+    redirect_uri: REDIRECT_URI
+  }).toString(),
+  { 
+    headers: { 
+      'Content-Type': 'application/x-www-form-urlencoded',
+      'Authorization': `Basic ${Buffer.from(`${TIKTOK_CLIENT_KEY}:${TIKTOK_CLIENT_SECRET}`).toString('base64')}`
+    } 
+  }
+);
 
     const { access_token, open_id, refresh_token } = tokenResponse.data;
 
