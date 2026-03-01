@@ -1272,66 +1272,56 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
 // Load Facebook credentials from DB
 app.get('/api/auth/facebook/load', async (req, res) => {
   try {
-    const userId = req.query.userId || 1;
-
-    // Ensure table AND all columns exist before querying
-    await ensureSocialAccountsTable();
-
-    const result = await pool.query(
-      `SELECT id, user_id, platform, page_id, page_name, instagram_account_id, instagram_account_name, updated_at
-       FROM social_accounts
-       WHERE user_id = $1 AND platform = 'facebook'`,
-      [userId]
-    );
-
-    if (result.rows.length > 0) {
-      res.json({ success: true, account: result.rows[0] });
-    } else {
-      res.json({ success: false, account: null });
-    }
-  } catch (error) {
-    console.error('Facebook load error:', error.message);
-    res.status(500).json({ success: false, error: error.message });
+    await ensureSocialAccountsTable(); // ← ADD THIS LINE if missing
+    const { userId } = req.query;
+    // ... rest of your code
+  } catch (err) {
+    console.error('Facebook load error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// ================================================================
-// ensureSocialAccountsTable — creates table + adds missing columns
-// ================================================================
 async function ensureSocialAccountsTable() {
-  // Create table if it does not exist at all
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS social_accounts (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER NOT NULL DEFAULT 1,
-      platform VARCHAR(50) NOT NULL,
-      access_token TEXT,
-      instagram_account_id VARCHAR(100),
-      instagram_account_name VARCHAR(100),
-      page_id VARCHAR(100),
-      page_name VARCHAR(100),
-      page_access_token TEXT,
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-      UNIQUE(user_id, platform)
-    )
-  `);
+  const client = await pool.connect();
+  try {
+    // Step 1: Create table if not exists
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER,
+        platform VARCHAR(50),
+        account_name VARCHAR(255),
+        access_token TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
 
-  // Add any columns that may be missing from older table versions
-  const alterStatements = [
-    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_id VARCHAR(100)`,
-    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_name VARCHAR(100)`,
-    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_access_token TEXT`,
-    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS instagram_account_id VARCHAR(100)`,
-    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS instagram_account_name VARCHAR(100)`,
-    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS access_token TEXT`,
-    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`
-  ];
+    // Step 2: Add missing columns one by one (SEPARATE from CREATE)
+    const alterQueries = [
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_name VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_access_token TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_id VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMP`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS refresh_token TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS scope TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS profile_picture_url TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS account_id VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS username VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`
+    ];
 
-  for (const stmt of alterStatements) {
-    await pool.query(stmt);
+    for (const query of alterQueries) {
+      await client.query(query);
+    }
+
+    console.log('✅ social_accounts table verified/migrated');
+  } catch (err) {
+    console.error('❌ ensureSocialAccountsTable error:', err.message);
+    throw err;
+  } finally {
+    client.release();
   }
 }
-
 // ================================================================
 // Save Facebook credentials to DB
 // ================================================================
