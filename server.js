@@ -1180,7 +1180,83 @@ async function ensureSocialAccountsTable() {
 // FACEBOOK OAuth & INTEGRATION ROUTES
 // ================================================================
 
+// ================================================================
+// ensureSocialAccountsTable helper — call this on server startup
+// ================================================================
+async function ensureSocialAccountsTable() {
+  const client = await pool.connect();
+  try {
+    // Step 1: Create table with all columns from the start
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS social_accounts (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        platform VARCHAR(50) NOT NULL,
+        access_token TEXT,
+        account_id VARCHAR(255),
+        account_name VARCHAR(255),
+        username VARCHAR(255),
+        page_id VARCHAR(255),
+        page_name VARCHAR(255),
+        page_access_token TEXT,
+        profile_picture_url TEXT,
+        scope TEXT,
+        refresh_token TEXT,
+        token_expires_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // Step 2: Add missing columns (safe to run repeatedly)
+    const alterQueries = [
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_name VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_id VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_access_token TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS account_id VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS username VARCHAR(255)`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS profile_picture_url TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS scope TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS refresh_token TEXT`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMP`,
+      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`
+    ];
+
+    for (const query of alterQueries) {
+      await client.query(query);
+    }
+
+    // Step 3: Add UNIQUE constraint on (user_id, platform) so ON CONFLICT works
+    // This will silently skip if constraint already exists
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint
+          WHERE conname = 'social_accounts_user_id_platform_key'
+        ) THEN
+          ALTER TABLE social_accounts ADD CONSTRAINT social_accounts_user_id_platform_key UNIQUE (user_id, platform);
+        END IF;
+      END
+      $$;
+    `);
+
+    console.log('✅ social_accounts table verified/migrated');
+  } catch (err) {
+    console.error('❌ ensureSocialAccountsTable error:', err.message);
+    throw err;
+  } finally {
+    client.release();
+  }
+}
+
+// !! Call this once when the server starts !!
+// Add this near the bottom of your server startup, e.g.:
+//   ensureSocialAccountsTable().catch(console.error);
+
+// ================================================================
 // Facebook OAuth Start
+// ================================================================
 app.get('/api/auth/facebook', (req, res) => {
   const FACEBOOK_APP_ID = process.env.FACEBOOK_APP_ID;
   const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/facebook/callback`;
@@ -1195,7 +1271,9 @@ app.get('/api/auth/facebook', (req, res) => {
   res.redirect(authUrl);
 });
 
+// ================================================================
 // Facebook OAuth Callback
+// ================================================================
 app.get('/api/auth/facebook/callback', async (req, res) => {
   const { code } = req.query;
 
@@ -1236,7 +1314,6 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     const pageId = page.id;
     const pageName = page.name;
 
-    // Ensure table exists with all required columns
     await ensureSocialAccountsTable();
 
     await pool.query(
@@ -1244,10 +1321,10 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (user_id, platform)
        DO UPDATE SET
-         access_token = $3,
-         page_id = $4,
-         page_name = $5,
-         page_access_token = $6,
+         access_token = EXCLUDED.access_token,
+         page_id = EXCLUDED.page_id,
+         page_name = EXCLUDED.page_name,
+         page_access_token = EXCLUDED.page_access_token,
          updated_at = CURRENT_TIMESTAMP`,
       [1, 'facebook', userAccessToken, pageId, pageName, pageAccessToken]
     );
@@ -1269,59 +1346,77 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
   }
 });
 
+// ================================================================
 // Load Facebook credentials from DB
+// ================================================================
 app.get('/api/auth/facebook/load', async (req, res) => {
   try {
-    await ensureSocialAccountsTable(); // ← ADD THIS LINE if missing
-    const { userId } = req.query;
-    // ... rest of your code
+    await ensureSocialAccountsTable();
+
+    const userId = req.query.userId || 1;
+
+    const result = await pool.query(
+      `SELECT
+         id,
+         user_id,
+         platform,
+         page_id,
+         page_name,
+         account_name,
+         username,
+         profile_picture_url,
+         scope,
+         token_expires_at,
+         created_at,
+         updated_at
+       FROM social_accounts
+       WHERE user_id = $1 AND platform = 'facebook'
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({
+        success: false,
+        connected: false,
+        message: 'Facebook account not connected'
+      });
+    }
+
+    const account = result.rows[0];
+
+    let tokenExpired = false;
+    if (account.token_expires_at) {
+      tokenExpired = new Date(account.token_expires_at) < new Date();
+    }
+
+    res.json({
+      success: true,
+      connected: true,
+      tokenExpired,
+      account: {
+        id: account.id,
+        userId: account.user_id,
+        platform: account.platform,
+        pageId: account.page_id,
+        pageName: account.page_name,
+        accountName: account.account_name,
+        username: account.username,
+        profilePictureUrl: account.profile_picture_url,
+        scope: account.scope,
+        tokenExpiresAt: account.token_expires_at,
+        createdAt: account.created_at,
+        updatedAt: account.updated_at
+        // NOTE: access_token and page_access_token intentionally omitted for security
+      }
+    });
+
   } catch (err) {
     console.error('Facebook load error:', err);
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
-async function ensureSocialAccountsTable() {
-  const client = await pool.connect();
-  try {
-    // Step 1: Create table if not exists
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS social_accounts (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER,
-        platform VARCHAR(50),
-        account_name VARCHAR(255),
-        access_token TEXT,
-        created_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-
-    // Step 2: Add missing columns one by one (SEPARATE from CREATE)
-    const alterQueries = [
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_name VARCHAR(255)`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_access_token TEXT`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_id VARCHAR(255)`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS token_expires_at TIMESTAMP`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS refresh_token TEXT`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS scope TEXT`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS profile_picture_url TEXT`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS account_id VARCHAR(255)`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS username VARCHAR(255)`,
-      `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT NOW()`
-    ];
-
-    for (const query of alterQueries) {
-      await client.query(query);
-    }
-
-    console.log('✅ social_accounts table verified/migrated');
-  } catch (err) {
-    console.error('❌ ensureSocialAccountsTable error:', err.message);
-    throw err;
-  } finally {
-    client.release();
-  }
-}
 // ================================================================
 // Save Facebook credentials to DB
 // ================================================================
@@ -1337,10 +1432,10 @@ app.post('/api/auth/facebook/save', async (req, res) => {
       VALUES ($1, $2, $3, $4, $5, $6)
       ON CONFLICT (user_id, platform)
       DO UPDATE SET
-        access_token = $3,
-        page_name = $4,
-        page_id = $5,
-        page_access_token = $6,
+        access_token = EXCLUDED.access_token,
+        page_name = EXCLUDED.page_name,
+        page_id = EXCLUDED.page_id,
+        page_access_token = EXCLUDED.page_access_token,
         updated_at = CURRENT_TIMESTAMP
       RETURNING id, user_id, platform, page_id, page_name, updated_at
     `, [resolvedUserId, 'facebook', accessToken, pageName, pageId, pageAccessToken]);
@@ -1353,9 +1448,8 @@ app.post('/api/auth/facebook/save', async (req, res) => {
 });
 
 // ================================================================
-// FACEBOOK POSTING
+// FACEBOOK POSTING — Text/Link
 // ================================================================
-
 app.post('/api/facebook/post', async (req, res) => {
   try {
     const { message, link, userId } = req.body;
@@ -1387,6 +1481,9 @@ app.post('/api/facebook/post', async (req, res) => {
   }
 });
 
+// ================================================================
+// FACEBOOK POSTING — Photo
+// ================================================================
 app.post('/api/facebook/post/photo', async (req, res) => {
   try {
     const { caption, imageUrl, userId } = req.body;
@@ -1415,6 +1512,9 @@ app.post('/api/facebook/post/photo', async (req, res) => {
   }
 });
 
+// ================================================================
+// FACEBOOK — Get Posts
+// ================================================================
 app.get('/api/facebook/posts', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
@@ -1442,13 +1542,15 @@ app.get('/api/facebook/posts', async (req, res) => {
 });
 
 // ================================================================
-// FACEBOOK ANALYTICS
+// FACEBOOK ANALYTICS — Page
 // ================================================================
-
 app.get('/api/facebook/analytics', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
-    const { metric = 'page_impressions,page_engaged_users,page_fans,page_views_total', period = 'day' } = req.query;
+    const {
+      metric = 'page_impressions,page_engaged_users,page_fans,page_views_total',
+      period = 'day'
+    } = req.query;
 
     const dbResult = await pool.query(
       `SELECT page_id, page_access_token, page_name FROM social_accounts WHERE user_id = $1 AND platform = 'facebook'`,
@@ -1485,6 +1587,9 @@ app.get('/api/facebook/analytics', async (req, res) => {
   }
 });
 
+// ================================================================
+// FACEBOOK ANALYTICS — Single Post
+// ================================================================
 app.get('/api/facebook/analytics/post/:postId', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
@@ -1517,6 +1622,9 @@ app.get('/api/facebook/analytics/post/:postId', async (req, res) => {
   }
 });
 
+// ================================================================
+// FACEBOOK — Disconnect
+// ================================================================
 app.delete('/api/auth/facebook/disconnect', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
@@ -1530,6 +1638,9 @@ app.delete('/api/auth/facebook/disconnect', async (req, res) => {
   }
 });
 
+// ================================================================
+// Privacy redirect
+// ================================================================
 app.get('/privacy', (req, res) => {
   res.redirect('https://nnit-social-frontend-gil7.vercel.app/privacy');
 });
