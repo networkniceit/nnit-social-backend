@@ -1221,8 +1221,6 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     const tokenResponse = await axios.get(tokenUrl);
     const userAccessToken = tokenResponse.data.access_token;
 
-    // FIX: Removed unused facebookUserId / facebookUserName variables
-
     // Get pages managed by this user
     const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${userAccessToken}`;
     const pagesResponse = await axios.get(pagesUrl);
@@ -1238,10 +1236,9 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     const pageId = page.id;
     const pageName = page.name;
 
-    // Ensure table exists (once, via shared helper)
+    // Ensure table exists with all required columns
     await ensureSocialAccountsTable();
 
-    // FIX: Store pageName in correct column `page_name`, not `instagram_account_name`
     await pool.query(
       `INSERT INTO social_accounts (user_id, platform, access_token, page_id, page_name, page_access_token)
        VALUES ($1, $2, $3, $4, $5, $6)
@@ -1255,8 +1252,6 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
       [1, 'facebook', userAccessToken, pageId, pageName, pageAccessToken]
     );
 
-    // FIX: Do NOT expose page_access_token in the redirect URL (security risk).
-    // Frontend should call /api/auth/facebook/load to retrieve credentials securely.
     res.redirect(
       `${process.env.FRONTEND_URL}/settings?` +
       `facebook_connected=true` +
@@ -1274,20 +1269,18 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
   }
 });
 
-// Load Facebook credentials from DB (called by frontend after OAuth redirect)
+// Load Facebook credentials from DB
 app.get('/api/auth/facebook/load', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
 
-    // Ensure table exists (once, via shared helper)
+    // Ensure table AND all columns exist before querying
     await ensureSocialAccountsTable();
 
     const result = await pool.query(
       `SELECT id, user_id, platform, page_id, page_name, instagram_account_id, instagram_account_name, updated_at
        FROM social_accounts
        WHERE user_id = $1 AND platform = 'facebook'`,
-      // FIX: access_token and page_access_token intentionally excluded from
-      // response — tokens should never be sent to the frontend
       [userId]
     );
 
@@ -1303,9 +1296,10 @@ app.get('/api/auth/facebook/load', async (req, res) => {
 });
 
 // ================================================================
-// Helper (defined once, used everywhere)
+// ensureSocialAccountsTable — creates table + adds missing columns
 // ================================================================
 async function ensureSocialAccountsTable() {
+  // Create table if it does not exist at all
   await pool.query(`
     CREATE TABLE IF NOT EXISTS social_accounts (
       id SERIAL PRIMARY KEY,
@@ -1321,6 +1315,21 @@ async function ensureSocialAccountsTable() {
       UNIQUE(user_id, platform)
     )
   `);
+
+  // Add any columns that may be missing from older table versions
+  const alterStatements = [
+    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_id VARCHAR(100)`,
+    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_name VARCHAR(100)`,
+    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS page_access_token TEXT`,
+    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS instagram_account_id VARCHAR(100)`,
+    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS instagram_account_name VARCHAR(100)`,
+    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS access_token TEXT`,
+    `ALTER TABLE social_accounts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP`
+  ];
+
+  for (const stmt of alterStatements) {
+    await pool.query(stmt);
+  }
 }
 
 // ================================================================
@@ -1331,7 +1340,7 @@ app.post('/api/auth/facebook/save', async (req, res) => {
     const { userId, pageId, pageName, pageAccessToken, accessToken } = req.body;
     const resolvedUserId = userId || 1;
 
-    await ensureSocialAccountsTable(); // FIX 2: use helper, no inline DDL
+    await ensureSocialAccountsTable();
 
     const result = await pool.query(`
       INSERT INTO social_accounts (user_id, platform, access_token, page_name, page_id, page_access_token)
@@ -1339,13 +1348,12 @@ app.post('/api/auth/facebook/save', async (req, res) => {
       ON CONFLICT (user_id, platform)
       DO UPDATE SET
         access_token = $3,
-        page_name = $4,             -- FIX 1: correct column
+        page_name = $4,
         page_id = $5,
         page_access_token = $6,
         updated_at = CURRENT_TIMESTAMP
       RETURNING id, user_id, platform, page_id, page_name, updated_at
     `, [resolvedUserId, 'facebook', accessToken, pageName, pageId, pageAccessToken]);
-    // FIX 1: RETURNING excludes sensitive token columns
 
     res.json({ success: true, account: result.rows[0] });
   } catch (error) {
@@ -1454,7 +1462,6 @@ app.get('/api/facebook/analytics', async (req, res) => {
 
     const dbResult = await pool.query(
       `SELECT page_id, page_access_token, page_name FROM social_accounts WHERE user_id = $1 AND platform = 'facebook'`,
-      // FIX 3: was selecting instagram_account_name AS pageName — now uses correct column
       [userId]
     );
 
