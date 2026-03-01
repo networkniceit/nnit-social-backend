@@ -5054,6 +5054,191 @@ app.get('/api/youtube/analytics', async (req, res) => {
 });
 
 // ================================================================
+// LINKEDIN OAuth & INTEGRATION ROUTES
+// ================================================================
+
+// LinkedIn OAuth Start
+app.get('/api/auth/linkedin', (req, res) => {
+  const LINKEDIN_CLIENT_ID = process.env.LINKEDIN_CLIENT_ID;
+  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/linkedin/callback`;
+
+  const authUrl =
+    `https://www.linkedin.com/oauth/v2/authorization?` +
+    `response_type=code` +
+    `&client_id=${LINKEDIN_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&scope=openid%20profile%20email%20w_member_social`;
+
+  res.redirect(authUrl);
+});
+
+// LinkedIn OAuth Callback
+app.get('/api/auth/linkedin/callback', async (req, res) => {
+  const { code } = req.query;
+
+  if (!code) {
+    return res.redirect(`${process.env.FRONTEND_URL}/settings?linkedin_error=true&reason=no_code`);
+  }
+
+  try {
+    const LINKEDIN_CLIENT_ID = process.env.LINKEDIN_CLIENT_ID;
+    const LINKEDIN_CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET;
+    const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/linkedin/callback`;
+
+    // Exchange code for access token
+    const tokenResponse = await axios.post(
+      'https://www.linkedin.com/oauth/v2/accessToken',
+      new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        redirect_uri: REDIRECT_URI,
+        client_id: LINKEDIN_CLIENT_ID,
+        client_secret: LINKEDIN_CLIENT_SECRET
+      }),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const accessToken = tokenResponse.data.access_token;
+
+    // Get user profile
+    const profileResponse = await axios.get('https://api.linkedin.com/v2/userinfo', {
+      headers: { Authorization: `Bearer ${accessToken}` }
+    });
+
+    const profile = profileResponse.data;
+    const accountId = profile.sub;
+    const accountName = profile.name || `${profile.given_name || ''} ${profile.family_name || ''}`.trim();
+
+    await ensureSocialAccountsTable();
+
+    await pool.query(
+      `INSERT INTO social_accounts (user_id, platform, access_token, account_id, account_name, username)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (user_id, platform)
+       DO UPDATE SET
+         access_token = EXCLUDED.access_token,
+         account_id = EXCLUDED.account_id,
+         account_name = EXCLUDED.account_name,
+         username = EXCLUDED.username,
+         updated_at = CURRENT_TIMESTAMP`,
+      [1, 'linkedin', accessToken, accountId, accountName, accountName]
+    );
+
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?` +
+      `linkedin_connected=true` +
+      `&linkedin_name=${encodeURIComponent(accountName)}` +
+      `&linkedin_id=${encodeURIComponent(accountId)}`
+    );
+
+  } catch (error) {
+    console.error('LinkedIn OAuth error:', error.response?.data || error.message);
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?linkedin_error=true&reason=${encodeURIComponent(
+        error.response?.data?.error_description || error.message
+      )}`
+    );
+  }
+});
+
+// ================================================================
+// Load LinkedIn credentials from DB
+// ================================================================
+app.get('/api/auth/linkedin/load', async (req, res) => {
+  try {
+    await ensureSocialAccountsTable();
+    const userId = req.query.userId || 1;
+
+    const result = await pool.query(
+      `SELECT id, user_id, platform, account_id, account_name, username, created_at, updated_at
+       FROM social_accounts
+       WHERE user_id = $1 AND platform = 'linkedin'
+       LIMIT 1`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.json({ success: false, connected: false, message: 'LinkedIn account not connected' });
+    }
+
+    const account = result.rows[0];
+    res.json({
+      success: true,
+      connected: true,
+      account: {
+        id: account.id,
+        userId: account.user_id,
+        platform: account.platform,
+        accountId: account.account_id,
+        accountName: account.account_name,
+        username: account.username,
+        createdAt: account.created_at,
+        updatedAt: account.updated_at
+      }
+    });
+
+  } catch (err) {
+    console.error('LinkedIn load error:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ================================================================
+// LinkedIn Post
+// ================================================================
+app.post('/api/linkedin/post', async (req, res) => {
+  try {
+    const { text, userId } = req.body;
+    const resolvedUserId = userId || 1;
+
+    const dbResult = await pool.query(
+      `SELECT access_token, account_id FROM social_accounts WHERE user_id = $1 AND platform = 'linkedin'`,
+      [resolvedUserId]
+    );
+
+    if (dbResult.rows.length === 0) {
+      return res.status(400).json({ success: false, error: 'LinkedIn not connected' });
+    }
+
+    const { access_token, account_id } = dbResult.rows[0];
+
+    const response = await axios.post(
+      'https://api.linkedin.com/v2/ugcPosts',
+      {
+        author: `urn:li:person:${account_id}`,
+        lifecycleState: 'PUBLISHED',
+        specificContent: {
+          'com.linkedin.ugc.ShareContent': {
+            shareCommentary: { text },
+            shareMediaCategory: 'NONE'
+          }
+        },
+        visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' }
+      },
+      { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json', 'X-Restli-Protocol-Version': '2.0.0' } }
+    );
+
+    res.json({ success: true, postId: response.data.id });
+  } catch (error) {
+    console.error('LinkedIn post error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.response?.data?.message || error.message });
+  }
+});
+
+// ================================================================
+// LinkedIn Disconnect
+// ================================================================
+app.delete('/api/auth/linkedin/disconnect', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    await pool.query(`DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'linkedin'`, [userId]);
+    res.json({ success: true, message: 'LinkedIn disconnected' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ================================================================
 // HEALTH CHECK
 // ================================================================
 
