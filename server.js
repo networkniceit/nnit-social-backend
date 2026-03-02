@@ -7,11 +7,13 @@ const Groq = require('groq-sdk');
 const axios = require('axios');
 const { Pool } = require('pg');
 const postRoutes = require('./routes/postRoutes');
+const uploadRoutes = require('./routes/uploadRoutes');
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 app.use('/api', postRoutes);
+app.use('/api/upload', uploadRoutes);
 
 // Database connection
 const pool = new Pool({
