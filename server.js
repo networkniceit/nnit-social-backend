@@ -19,7 +19,7 @@ const pool = new Pool({
 
 // Initialize AI engines
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY?.trim() });
 
 // ================================================================
 // DATA STORES (Move to database in production)
