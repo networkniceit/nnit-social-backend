@@ -6,10 +6,12 @@ const { OpenAI } = require('openai');
 const Groq = require('groq-sdk');
 const axios = require('axios');
 const { Pool } = require('pg');
+const postRoutes = require('./routes/postRoutes');
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+app.use('/api', postRoutes);
 
 // Database connection
 const pool = new Pool({
