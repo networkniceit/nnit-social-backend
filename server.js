@@ -676,131 +676,135 @@ Return as JSON: {"ideas": ["idea1", "idea2", ...]}`;
 // ================================================================
 
 // Schedule a post
-app.post('/api/posts/schedule', (req, res) => {
+
+app.post('/api/posts/schedule', async (req, res) => {
   try {
-    const {
-      clientId,
-      content,
-      platforms,
-      scheduledTime,
-      media,
-      hashtags
-    } = req.body;
-    
-    const client = clients.get(clientId);
-    if (!client) {
-      return res.status(404).json({ error: 'Client not found' });
-    }
-    
-    const post = {
-      id: `post_${Date.now()}`,
-      clientId,
-      content,
-      platforms: platforms || [],
-      scheduledTime: new Date(scheduledTime),
-      media: media || [],
-      hashtags: hashtags || [],
-      status: 'scheduled',
-      createdAt: new Date().toISOString(),
-      results: {}
-    };
-    
-    scheduledPosts.push(post);
-    client.stats.scheduledPosts++;
-    
-    res.json({ success: true, post });
+    const { clientId, content, platforms, scheduledTime, media, hashtags } = req.body;
+
+    const result = await pool.query(
+      `INSERT INTO posts (client_id, content, platforms, scheduled_time, media, hashtags, status, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 'scheduled', NOW()) RETURNING *`,
+      [clientId, content, JSON.stringify(platforms || []), scheduledTime, JSON.stringify(media || []), JSON.stringify(hashtags || [])]
+    );
+
+    res.json({ success: true, post: result.rows[0] });
+  } catch (error) {
+    console.error('Schedule error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get('/api/posts/scheduled/:clientId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM posts WHERE client_id = $1 AND status = 'scheduled' ORDER BY scheduled_time ASC`,
+      [req.params.clientId]
+    );
+    res.json(result.rows);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get scheduled posts for a client
-app.get('/api/posts/scheduled/:clientId', (req, res) => {
-  const posts = scheduledPosts.filter(p => 
-    p.clientId === req.params.clientId && p.status === 'scheduled'
-  );
-  
-  res.json({ success: true, posts, total: posts.length });
-});
-
-// Get all posts for a client
-app.get('/api/posts/:clientId', (req, res) => {
-  const allPosts = [
-    ...scheduledPosts.filter(p => p.clientId === req.params.clientId),
-    ...publishedPosts.filter(p => p.clientId === req.params.clientId)
-  ].sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  
-  res.json({ success: true, posts: allPosts, total: allPosts.length });
-});
-
-// Update scheduled post
-app.put('/api/posts/:postId', (req, res) => {
-  const postIndex = scheduledPosts.findIndex(p => p.id === req.params.postId);
-  
-  if (postIndex === -1) {
-    return res.status(404).json({ error: 'Post not found' });
+app.get('/api/posts/:clientId', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT * FROM posts WHERE client_id = $1 ORDER BY created_at DESC`,
+      [req.params.clientId]
+    );
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  scheduledPosts[postIndex] = {
-    ...scheduledPosts[postIndex],
-    ...req.body,
-    updatedAt: new Date().toISOString()
-  };
-  
-  res.json({ success: true, post: scheduledPosts[postIndex] });
 });
 
-// Delete scheduled post
-app.delete('/api/posts/:postId', (req, res) => {
-  const postIndex = scheduledPosts.findIndex(p => p.id === req.params.postId);
-  
-  if (postIndex === -1) {
-    return res.status(404).json({ error: 'Post not found' });
+app.put('/api/posts/:postId', async (req, res) => {
+  try {
+    const { content, platforms, scheduledTime, hashtags } = req.body;
+    const result = await pool.query(
+      `UPDATE posts SET content=$1, platforms=$2, scheduled_time=$3, hashtags=$4 WHERE id=$5 RETURNING *`,
+      [content, JSON.stringify(platforms), scheduledTime, JSON.stringify(hashtags), req.params.postId]
+    );
+    res.json({ success: true, post: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  const post = scheduledPosts[postIndex];
-  const client = clients.get(post.clientId);
-  if (client) {
-    client.stats.scheduledPosts--;
-  }
-  
-  scheduledPosts.splice(postIndex, 1);
-  
-  res.json({ success: true });
 });
 
-// Publish post immediately
+app.delete('/api/posts/:postId', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM posts WHERE id = $1`, [req.params.postId]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post('/api/posts/:postId/publish', async (req, res) => {
-  const postIndex = scheduledPosts.findIndex(p => p.id === req.params.postId);
-  
-  if (postIndex === -1) {
-    return res.status(404).json({ error: 'Post not found' });
+  try {
+    const postResult = await pool.query(`SELECT * FROM posts WHERE id = $1`, [req.params.postId]);
+    if (postResult.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
+
+    const post = postResult.rows[0];
+    const platforms = JSON.parse(post.platforms || '[]');
+    const content = post.content;
+    const results = {};
+
+    for (const platform of platforms) {
+      try {
+        const tokenResult = await pool.query(
+          `SELECT access_token, extra_data FROM social_connections WHERE platform = $1 AND status = 'connected' LIMIT 1`,
+          [platform]
+        );
+        if (tokenResult.rows.length === 0) { results[platform] = { success: false, error: 'Not connected' }; continue; }
+
+        const { access_token, extra_data } = tokenResult.rows[0];
+        const extraData = extra_data || {};
+
+        if (platform === 'linkedin') {
+          const r = await axios.post(`${req.protocol}://${req.get('host')}/api/linkedin/post`, { content });
+          results[platform] = r.data;
+
+        } else if (platform === 'facebook') {
+          const pageId = extraData.page_id;
+          if (!pageId) { results[platform] = { success: false, error: 'No page ID' }; continue; }
+          const ptRes = await axios.get(`https://graph.facebook.com/v18.0/${pageId}`, { params: { fields: 'access_token', access_token } });
+          const postRes = await axios.post(`https://graph.facebook.com/v18.0/${pageId}/feed`, { message: content, access_token: ptRes.data.access_token });
+          results[platform] = { success: true, postId: postRes.data.id };
+
+        } else if (platform === 'instagram') {
+          const igUserId = extraData.instagram_business_account_id || extraData.ig_user_id;
+          if (!igUserId) { results[platform] = { success: false, error: 'No IG user ID' }; continue; }
+          results[platform] = { success: false, error: 'Instagram requires an image URL' };
+
+        } else if (platform === 'twitter') {
+          const tweetRes = await axios.post('https://api.twitter.com/2/tweets', { text: content }, { headers: { Authorization: `Bearer ${access_token}`, 'Content-Type': 'application/json' } });
+          results[platform] = { success: true, tweetId: tweetRes.data?.data?.id };
+
+        } else if (platform === 'tiktok') {
+          results[platform] = { success: false, error: 'TikTok requires a video URL' };
+
+        } else if (platform === 'youtube') {
+          results[platform] = { success: false, error: 'YouTube requires a video URL' };
+
+        } else {
+          results[platform] = { success: false, error: 'Unknown platform' };
+        }
+      } catch (err) {
+        results[platform] = { success: false, error: err.response?.data?.error?.message || err.message };
+      }
+    }
+
+    await pool.query(
+      `UPDATE posts SET status='published', published_at=NOW(), results=$1 WHERE id=$2`,
+      [JSON.stringify(results), req.params.postId]
+    );
+
+    res.json({ success: true, results });
+  } catch (error) {
+    console.error('Publish error:', error.message);
+    res.status(500).json({ error: error.message });
   }
-  
-  const post = scheduledPosts[postIndex];
-  
-  post.status = 'published';
-  post.publishedAt = new Date().toISOString();
-  post.results = {};
-  
-  post.platforms.forEach(platform => {
-    post.results[platform] = {
-      success: true,
-      postId: `${platform}_${Date.now()}`,
-      url: `https://${platform}.com/post/${Date.now()}`
-    };
-  });
-  
-  publishedPosts.push(post);
-  scheduledPosts.splice(postIndex, 1);
-  
-  const client = clients.get(post.clientId);
-  if (client) {
-    client.stats.totalPosts++;
-    client.stats.scheduledPosts--;
-  }
-  
-  res.json({ success: true, post });
 });
 
 // ================================================================
