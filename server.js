@@ -81,42 +81,65 @@ app.post('/api/clients', (req, res) => {
 });
 
 // Get all clients
-app.get('/api/clients', (req, res) => {
-  res.json({ 
-    success: true, 
-    clients: Array.from(clients.values()),
-    total: clients.size
-  });
+app.post('/api/clients', async (req, res) => {
+  try {
+    const { name, email, industry, brandVoice, platforms, plan, phone, website, notes } = req.body;
+    const result = await pool.query(
+      `INSERT INTO clients (name, email, phone, industry, website, notes, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) RETURNING *`,
+      [name, email, phone || null, industry, website || null, notes || brandVoice || null]
+    );
+    res.json({ success: true, client: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all clients
+app.get('/api/clients', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM clients ORDER BY created_at DESC`);
+    res.json({ success: true, clients: result.rows, total: result.rows.length });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // Get single client
-app.get('/api/clients/:clientId', (req, res) => {
-  const client = clients.get(req.params.clientId);
-  if (!client) {
-    return res.status(404).json({ error: 'Client not found' });
+app.get('/api/clients/:clientId', async (req, res) => {
+  try {
+    const result = await pool.query(`SELECT * FROM clients WHERE id = $1`, [req.params.clientId]);
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Client not found' });
+    res.json({ success: true, client: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  res.json({ success: true, client });
 });
 
 // Update client
-app.put('/api/clients/:clientId', (req, res) => {
-  const client = clients.get(req.params.clientId);
-  if (!client) {
-    return res.status(404).json({ error: 'Client not found' });
+app.put('/api/clients/:clientId', async (req, res) => {
+  try {
+    const { name, email, phone, industry, website, notes } = req.body;
+    const result = await pool.query(
+      `UPDATE clients SET name=$1, email=$2, phone=$3, industry=$4, website=$5, notes=$6, updated_at=NOW()
+       WHERE id=$7 RETURNING *`,
+      [name, email, phone, industry, website, notes, req.params.clientId]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Client not found' });
+    res.json({ success: true, client: result.rows[0] });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-  
-  Object.assign(client, req.body);
-  client.updatedAt = new Date().toISOString();
-  clients.set(req.params.clientId, client);
-  
-  res.json({ success: true, client });
 });
 
 // Delete client
-app.delete('/api/clients/:clientId', (req, res) => {
-  clients.delete(req.params.clientId);
-  analytics.delete(req.params.clientId);
-  res.json({ success: true });
+app.delete('/api/clients/:clientId', async (req, res) => {
+  try {
+    await pool.query(`DELETE FROM clients WHERE id = $1`, [req.params.clientId]);
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ================================================================
