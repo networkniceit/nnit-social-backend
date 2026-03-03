@@ -707,9 +707,7 @@ app.delete('/api/auth/facebook/disconnect', async (req, res) => {
   }
 });
 
-// ================================================================
-// TIKTOK OAuth & INTEGRATION ROUTES
-// ================================================================
+
 // ================================================================
 // TIKTOK OAuth & INTEGRATION ROUTES
 // ================================================================
@@ -971,90 +969,155 @@ app.get('/api/tiktok/videos', async (req, res) => {
 // ================================================================
 // TWITTER/X OAuth & INTEGRATION ROUTES
 // ================================================================
-app.post('/api/twitter/post', async (req, res) => {
+// ================================================================
+// TWITTER/X OAuth & INTEGRATION ROUTES
+// ================================================================
+
+const twitterOAuthSessions = new Map();
+
+app.get('/api/auth/twitter', (req, res) => {
+  const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
+  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/twitter/callback`;
+  const codeVerifier = Math.random().toString(36).repeat(3).substring(0, 43);
+  const state = Math.random().toString(36).substring(2);
+  twitterOAuthSessions.set(state, { codeVerifier, createdAt: Date.now() });
+
+  const authUrl =
+    `https://twitter.com/i/oauth2/authorize?response_type=code` +
+    `&client_id=${TWITTER_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&scope=tweet.read%20tweet.write%20users.read%20offline.access` +
+    `&state=${state}` +
+    `&code_challenge=${codeVerifier}` +
+    `&code_challenge_method=plain`;
+
+  res.redirect(authUrl);
+});
+
+app.get('/api/auth/twitter/callback', async (req, res) => {
+  const { code, state, error } = req.query;
+  if (error || !code) {
+    return res.redirect(`${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=${encodeURIComponent(error || 'no_code')}`);
+  }
+
+  const session = twitterOAuthSessions.get(state);
+  const codeVerifier = session?.codeVerifier;
+  if (!codeVerifier) {
+    return res.redirect(`${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=invalid_state`);
+  }
+  twitterOAuthSessions.delete(state);
+
   try {
-    const { text, userId } = req.body;
-    const resolvedUserId = userId || 1;
+    const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
+    const TWITTER_CLIENT_SECRET = process.env.TWITTER_CLIENT_SECRET;
+    const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/twitter/callback`;
 
-    const dbResult = await pool.query(
-      `SELECT access_token, page_access_token FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
-      [resolvedUserId]
-    );
-    if (dbResult.rows.length === 0)
-      return res.status(400).json({ success: false, error: 'Twitter not connected' });
-
-    let { access_token, page_access_token: refresh_token } = dbResult.rows[0];
-
-    // Helper to refresh the access token
-    const refreshAccessToken = async () => {
-      const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
-      const TWITTER_CLIENT_SECRET = process.env.TWITTER_CLIENT_SECRET;
-
-      const response = await axios.post(
-        'https://api.twitter.com/2/oauth2/token',
-        new URLSearchParams({
-          grant_type: 'refresh_token',
-          refresh_token,
-          client_id: TWITTER_CLIENT_ID
-        }).toString(),
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${Buffer.from(`${TWITTER_CLIENT_ID}:${TWITTER_CLIENT_SECRET}`).toString('base64')}`
-          }
+    const tokenResponse = await axios.post(
+      'https://api.twitter.com/2/oauth2/token',
+      new URLSearchParams({ code, grant_type: 'authorization_code', client_id: TWITTER_CLIENT_ID, redirect_uri: REDIRECT_URI, code_verifier: codeVerifier }).toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'Authorization': `Basic ${Buffer.from(`${TWITTER_CLIENT_ID}:${TWITTER_CLIENT_SECRET}`).toString('base64')}`
         }
-      );
-
-      const { access_token: new_access_token, refresh_token: new_refresh_token } = response.data;
-
-      // Save new tokens to DB
-      await pool.query(
-        `UPDATE social_accounts SET access_token = $1, page_access_token = $2, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $3 AND platform = 'twitter'`,
-        [new_access_token, new_refresh_token || refresh_token, resolvedUserId]
-      );
-
-      return new_access_token;
-    };
-
-    // Try posting, refresh token if 401
-    try {
-      const response = await axios.post(
-        'https://api.twitter.com/2/tweets',
-        { text },
-        { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
-      );
-      return res.json({ success: true, tweetId: response.data.data.id });
-
-    } catch (postError) {
-      const status = postError.response?.status;
-      const errorCode = postError.response?.data?.error?.code;
-
-      // If unauthorized or scope error, try refreshing token
-      if (status === 401 || errorCode === 'scope_not_authorized') {
-        if (!refresh_token) {
-          return res.status(401).json({
-            success: false,
-            error: 'Twitter token expired. Please reconnect your Twitter account.'
-          });
-        }
-
-        access_token = await refreshAccessToken();
-
-        // Retry post with new token
-        const retryResponse = await axios.post(
-          'https://api.twitter.com/2/tweets',
-          { text },
-          { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
-        );
-        return res.json({ success: true, tweetId: retryResponse.data.data.id });
       }
+    );
 
-      throw postError;
-    }
+    const { access_token, refresh_token } = tokenResponse.data;
 
+    const userResponse = await axios.get('https://api.twitter.com/2/users/me', {
+      headers: { 'Authorization': `Bearer ${access_token}` },
+      params: { 'user.fields': 'id,name,username,profile_image_url,public_metrics' }
+    });
+
+    const user = userResponse.data.data;
+    const username = user.username;
+    const displayName = user.name;
+    const twitterUserId = user.id;
+
+    await ensureSocialAccountsTable();
+
+    await pool.query(`
+      INSERT INTO social_accounts
+        (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (user_id, platform)
+      DO UPDATE SET
+        access_token           = $3,
+        instagram_account_id   = $4,
+        instagram_account_name = $5,
+        page_id                = $6,
+        page_access_token      = $7,
+        updated_at             = CURRENT_TIMESTAMP
+    `, [1, 'twitter', access_token, twitterUserId, displayName, username, refresh_token || '']);
+
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?twitter_connected=true&twitter_username=${encodeURIComponent(username)}&twitter_name=${encodeURIComponent(displayName)}&twitter_id=${twitterUserId}`
+    );
   } catch (error) {
-    console.error('Twitter post error:', error.response?.data || error.message);
+    console.error('Twitter OAuth error:', error.response?.data || error.message);
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=${encodeURIComponent(JSON.stringify(error.response?.data) || error.message)}`
+    );
+  }
+});
+
+app.get('/api/auth/twitter/load', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    const result = await pool.query(
+      `SELECT id, user_id, platform, instagram_account_id AS twitter_id, instagram_account_name AS display_name, page_id AS username, updated_at
+       FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
+      [userId]
+    );
+    if (result.rows.length > 0) {
+      res.json({ success: true, account: result.rows[0] });
+    } else {
+      res.json({ success: false, account: null });
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.delete('/api/auth/twitter/disconnect', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    await pool.query(`DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`, [userId]);
+    res.json({ success: true, message: 'Twitter disconnected' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/twitter/analytics', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    const dbResult = await pool.query(
+      `SELECT access_token, instagram_account_name, page_id FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
+      [userId]
+    );
+    if (dbResult.rows.length === 0) return res.status(400).json({ success: false, error: 'Twitter not connected' });
+
+    const { access_token, instagram_account_name: displayName, page_id: username } = dbResult.rows[0];
+    const userResponse = await axios.get('https://api.twitter.com/2/users/me', {
+      headers: { 'Authorization': `Bearer ${access_token}` },
+      params: { 'user.fields': 'public_metrics,profile_image_url' }
+    });
+
+    const user = userResponse.data.data;
+    const metrics = user.public_metrics || {};
+    res.json({
+      success: true,
+      username: username || displayName,
+      displayName,
+      followerCount: metrics.followers_count || 0,
+      followingCount: metrics.following_count || 0,
+      tweetCount: metrics.tweet_count || 0,
+      profileImageUrl: user.profile_image_url || ''
+    });
+  } catch (error) {
+    console.error('Twitter analytics error:', error.response?.data || error.message);
     res.status(500).json({ success: false, error: error.response?.data?.detail || error.message });
   }
 });
