@@ -1303,7 +1303,10 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
 
     const tokenResponse = await axios.get(tokenUrl);
     const userAccessToken = tokenResponse.data.access_token;
-
+// Exchange for long-lived token (60 days)
+const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${FACEBOOK_APP_ID}&client_secret=${FACEBOOK_APP_SECRET}&fb_exchange_token=${userAccessToken}`;
+const longLivedResponse = await axios.get(longLivedUrl);
+const longLivedToken = longLivedResponse.data.access_token || userAccessToken;
     // Get pages managed by this user
     const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${userAccessToken}`;
     const pagesResponse = await axios.get(pagesUrl);
@@ -1313,8 +1316,7 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
         `${process.env.FRONTEND_URL}/settings?facebook_error=true&reason=no_pages`
       );
     }
-
-    const page = pagesResponse.data.data[0];
+const page = pagesResponse.data.data[0];
     const pageAccessToken = page.access_token;
     const pageId = page.id;
     const pageName = page.name;
@@ -1331,7 +1333,7 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
          page_id = EXCLUDED.page_id,
          page_access_token = EXCLUDED.page_access_token,
          updated_at = CURRENT_TIMESTAMP`,
-      [1, 'facebook', userAccessToken, pageName, pageId, pageAccessToken]
+      [1, 'facebook', longLivedToken, pageName, pageId, pageAccessToken]
     );
 
     res.redirect(
