@@ -1322,16 +1322,16 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     await ensureSocialAccountsTable();
 
     await pool.query(
-      `INSERT INTO social_accounts (user_id, platform, access_token, page_id, page_name, page_access_token)
+      `INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_name, page_id, page_access_token)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (user_id, platform)
        DO UPDATE SET
          access_token = EXCLUDED.access_token,
+         instagram_account_name = EXCLUDED.instagram_account_name,
          page_id = EXCLUDED.page_id,
-         page_name = EXCLUDED.page_name,
          page_access_token = EXCLUDED.page_access_token,
          updated_at = CURRENT_TIMESTAMP`,
-      [1, 'facebook', userAccessToken, pageId, pageName, pageAccessToken]
+      [1, 'facebook', userAccessToken, pageName, pageId, pageAccessToken]
     );
 
     res.redirect(
@@ -1361,19 +1361,7 @@ app.get('/api/auth/facebook/load', async (req, res) => {
     const userId = req.query.userId || 1;
 
     const result = await pool.query(
-      `SELECT
-         id,
-         user_id,
-         platform,
-         page_id,
-         page_name,
-         account_name,
-         username,
-         profile_picture_url,
-         scope,
-         token_expires_at,
-         created_at,
-         updated_at
+      `SELECT id, user_id, platform, page_id, instagram_account_name, updated_at
        FROM social_accounts
        WHERE user_id = $1 AND platform = 'facebook'
        LIMIT 1`,
@@ -1381,38 +1369,21 @@ app.get('/api/auth/facebook/load', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.json({
-        success: false,
-        connected: false,
-        message: 'Facebook account not connected'
-      });
+      return res.json({ success: false, connected: false, message: 'Facebook account not connected' });
     }
 
     const account = result.rows[0];
 
-    let tokenExpired = false;
-    if (account.token_expires_at) {
-      tokenExpired = new Date(account.token_expires_at) < new Date();
-    }
-
     res.json({
       success: true,
       connected: true,
-      tokenExpired,
       account: {
         id: account.id,
         userId: account.user_id,
         platform: account.platform,
         pageId: account.page_id,
-        pageName: account.page_name,
-        accountName: account.account_name,
-        username: account.username,
-        profilePictureUrl: account.profile_picture_url,
-        scope: account.scope,
-        tokenExpiresAt: account.token_expires_at,
-        createdAt: account.created_at,
+        pageName: account.instagram_account_name,
         updatedAt: account.updated_at
-        // NOTE: access_token and page_access_token intentionally omitted for security
       }
     });
 
