@@ -1304,9 +1304,14 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
     const tokenResponse = await axios.get(tokenUrl);
     const userAccessToken = tokenResponse.data.access_token;
 // Exchange for long-lived token (60 days)
-const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${FACEBOOK_APP_ID}&client_secret=${FACEBOOK_APP_SECRET}&fb_exchange_token=${userAccessToken}`;
-const longLivedResponse = await axios.get(longLivedUrl);
-const longLivedToken = longLivedResponse.data.access_token || userAccessToken;
+let longLivedToken = userAccessToken;
+try {
+  const longLivedUrl = `https://graph.facebook.com/v18.0/oauth/access_token?grant_type=fb_exchange_token&client_id=${FACEBOOK_APP_ID}&client_secret=${FACEBOOK_APP_SECRET}&fb_exchange_token=${userAccessToken}`;
+  const longLivedResponse = await axios.get(longLivedUrl);
+  longLivedToken = longLivedResponse.data.access_token || userAccessToken;
+} catch (e) {
+  console.error('Long-lived token exchange failed:', e.message);
+}
     // Get pages managed by this user
     const pagesUrl = `https://graph.facebook.com/v18.0/me/accounts?access_token=${userAccessToken}`;
     const pagesResponse = await axios.get(pagesUrl);
