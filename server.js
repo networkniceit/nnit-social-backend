@@ -1956,7 +1956,8 @@ app.get('/api/auth/twitter/callback', async (req, res) => {
   }
 
   // FIX 1: Read codeVerifier from per-session Map (not shared app.locals)
-  const codeVerifier = twitterOAuthSessions.get(state);
+  const session = twitterOAuthSessions.get(state);
+const codeVerifier = session?.codeVerifier;
   if (!codeVerifier) {
     return res.redirect(
       `${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=invalid_state`
@@ -4837,7 +4838,6 @@ app.get('/api/tiktok/videos', async (req, res) => {
 app.get('/api/auth/twitter', (req, res) => {
   const { TWITTER_CLIENT_ID, BACKEND_URL } = process.env;
   const REDIRECT_URI = `${BACKEND_URL}/api/auth/twitter/callback`;
-  const codeVerifier = Math.random().toString(36).repeat(3).substring(0, 43);
   const state = Math.random().toString(36).substring(2);
   app.locals.twitterCodeVerifier = codeVerifier;
   app.locals.twitterState = state;
