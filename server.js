@@ -1404,16 +1404,16 @@ app.post('/api/auth/facebook/save', async (req, res) => {
     await ensureSocialAccountsTable();
 
     const result = await pool.query(`
-      INSERT INTO social_accounts (user_id, platform, access_token, page_name, page_id, page_access_token)
+      INSERT INTO social_accounts (user_id, platform, access_token, instagram_account_name, page_id, page_access_token)
       VALUES ($1, $2, $3, $4, $5, $6)
       ON CONFLICT (user_id, platform)
       DO UPDATE SET
         access_token = EXCLUDED.access_token,
-        page_name = EXCLUDED.page_name,
+        instagram_account_name = EXCLUDED.instagram_account_name,
         page_id = EXCLUDED.page_id,
         page_access_token = EXCLUDED.page_access_token,
         updated_at = CURRENT_TIMESTAMP
-      RETURNING id, user_id, platform, page_id, page_name, updated_at
+      RETURNING id, user_id, platform, page_id, instagram_account_name, updated_at
     `, [resolvedUserId, 'facebook', accessToken, pageName, pageId, pageAccessToken]);
 
     res.json({ success: true, account: result.rows[0] });
