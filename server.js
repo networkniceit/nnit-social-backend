@@ -40,41 +40,15 @@ const analytics = new Map();
 // ================================================================
 
 // Create new client
-app.post('/api/clients', (req, res) => {
+app.post('/api/clients', async (req, res) => {
   try {
-    const { name, email, industry, brandVoice, platforms, plan } = req.body;
-    
-    const clientId = `client_${Date.now()}`;
-    const client = {
-      id: clientId,
-      name,
-      email,
-      industry,
-      brandVoice: brandVoice || 'professional and friendly',
-      platforms: platforms || [],
-      plan: plan || 'basic',
-      socialAccounts: {},
-      settings: {
-        autoReply: true,
-        autoHashtags: true,
-        bestTimePosting: true,
-        contentModeration: true
-      },
-      stats: {
-        totalPosts: 0,
-        scheduledPosts: 0,
-        totalEngagement: 0,
-        totalFollowers: 0,
-        avgEngagementRate: 0
-      },
-      createdAt: new Date().toISOString(),
-      status: 'active'
-    };
-    
-    clients.set(clientId, client);
-    analytics.set(clientId, { daily: [], weekly: [], monthly: [] });
-    
-    res.json({ success: true, client });
+    const { name, email, industry, brandVoice, phone, website, notes, plan } = req.body;
+    const result = await pool.query(
+      `INSERT INTO clients (name, email, phone, industry, website, notes, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) RETURNING *`,
+      [name, email, phone || null, industry, website || null, notes || brandVoice || null]
+    );
+    res.json({ success: true, client: result.rows[0] });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
