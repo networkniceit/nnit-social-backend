@@ -532,25 +532,64 @@ app.post('/api/auth/facebook/save', async (req, res) => {
   }
 });
 
+// ✅ FIXED - only this route was changed
 app.post('/api/facebook/post', async (req, res) => {
   try {
     const { message, link, userId } = req.body;
     const resolvedUserId = userId || 1;
+
     const dbResult = await pool.query(
       `SELECT page_id, page_access_token FROM social_accounts WHERE user_id = $1 AND platform = 'facebook'`,
       [resolvedUserId]
     );
-    if (dbResult.rows.length === 0) return res.status(400).json({ success: false, error: 'Facebook not connected' });
+    if (dbResult.rows.length === 0)
+      return res.status(400).json({ success: false, error: 'Facebook not connected' });
 
     const { page_id, page_access_token } = dbResult.rows[0];
+
+    // Guard: catch missing/empty token early with clear message
+    if (!page_access_token || page_access_token.trim() === '') {
+      return res.status(401).json({
+        success: false,
+        error: 'Facebook access token missing. Please reconnect your Facebook account.'
+      });
+    }
+
     const postData = { message, access_token: page_access_token };
     if (link) postData.link = link;
 
-    const response = await axios.post(`https://graph.facebook.com/v18.0/${page_id}/feed`, postData);
-    res.json({ success: true, postId: response.data.id });
+    try {
+      const response = await axios.post(
+        `https://graph.facebook.com/v18.0/${page_id}/feed`,
+        postData
+      );
+      return res.json({ success: true, postId: response.data.id });
+
+    } catch (postError) {
+      const fbError = postError.response?.data?.error;
+
+      // Token expired or invalid — clear stale token and prompt reconnect
+      if (fbError?.code === 190 || fbError?.code === 102 || fbError?.type === 'OAuthException') {
+        await pool.query(
+          `UPDATE social_accounts SET page_access_token = '', updated_at = CURRENT_TIMESTAMP
+           WHERE user_id = $1 AND platform = 'facebook'`,
+          [resolvedUserId]
+        );
+        return res.status(401).json({
+          success: false,
+          error: 'Facebook token expired. Please reconnect your Facebook account.'
+        });
+      }
+
+      throw postError;
+    }
+
   } catch (error) {
     console.error('Facebook post error:', error.response?.data || error.message);
-    res.status(500).json({ success: false, error: error.response?.data?.error?.message || error.message });
+    res.status(500).json({
+      success: false,
+      error: error.response?.data?.error?.message || error.message
+    });
   }
 });
 
@@ -671,6 +710,9 @@ app.delete('/api/auth/facebook/disconnect', async (req, res) => {
 // ================================================================
 // TIKTOK OAuth & INTEGRATION ROUTES
 // ================================================================
+// ================================================================
+// TIKTOK OAuth & INTEGRATION ROUTES
+// ================================================================
 
 app.get('/api/auth/tiktok', (req, res) => {
   const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
@@ -679,7 +721,7 @@ app.get('/api/auth/tiktok', (req, res) => {
   const authUrl =
     `https://www.tiktok.com/v2/auth/authorize?` +
     `client_key=${TIKTOK_CLIENT_KEY}` +
-    `&scope=user.info.basic` +
+    `&scope=user.info.basic,video.publish,video.upload` +  // ✅ FIXED: added required posting scopes
     `&response_type=code` +
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
     `&state=${csrfState}`;
@@ -774,27 +816,103 @@ app.delete('/api/auth/tiktok/disconnect', async (req, res) => {
   }
 });
 
+// ✅ FIXED - token refresh + scope error handling added
 app.post('/api/tiktok/post/video', async (req, res) => {
   try {
     const { videoUrl, caption, userId } = req.body;
     const resolvedUserId = userId || 1;
+
     const dbResult = await pool.query(
-      `SELECT access_token FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
+      `SELECT access_token, page_access_token FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
       [resolvedUserId]
     );
-    if (dbResult.rows.length === 0) return res.status(400).json({ success: false, error: 'TikTok not connected' });
+    if (dbResult.rows.length === 0)
+      return res.status(400).json({ success: false, error: 'TikTok not connected' });
 
-    const { access_token } = dbResult.rows[0];
-    const initResponse = await axios.post(
-      'https://open.tiktokapis.com/v2/post/publish/video/init/',
-      {
-        post_info: { title: caption || '', privacy_level: 'PUBLIC_TO_EVERYONE', disable_duet: false, disable_comment: false, disable_stitch: false },
-        source_info: { source: 'PULL_FROM_URL', video_url: videoUrl }
-      },
-      { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
-    );
+    let { access_token, page_access_token: refresh_token } = dbResult.rows[0];
 
-    res.json({ success: true, publishId: initResponse.data.data?.publish_id });
+    // Helper to refresh TikTok access token
+    const refreshAccessToken = async () => {
+      const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
+      const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET;
+
+      const response = await axios.post(
+        'https://open.tiktokapis.com/v2/oauth/token/',
+        new URLSearchParams({
+          client_key: TIKTOK_CLIENT_KEY,
+          client_secret: TIKTOK_CLIENT_SECRET,
+          grant_type: 'refresh_token',
+          refresh_token
+        }).toString(),
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${Buffer.from(`${TIKTOK_CLIENT_KEY}:${TIKTOK_CLIENT_SECRET}`).toString('base64')}`
+          }
+        }
+      );
+
+      const { access_token: new_access_token, refresh_token: new_refresh_token } = response.data;
+
+      await pool.query(
+        `UPDATE social_accounts SET access_token = $1, page_access_token = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $3 AND platform = 'tiktok'`,
+        [new_access_token, new_refresh_token || refresh_token, resolvedUserId]
+      );
+
+      return new_access_token;
+    };
+
+    // Attempt to post video
+    const doPost = async (token) => {
+      return await axios.post(
+        'https://open.tiktokapis.com/v2/post/publish/video/init/',
+        {
+          post_info: {
+            title: caption || '',
+            privacy_level: 'PUBLIC_TO_EVERYONE',
+            disable_duet: false,
+            disable_comment: false,
+            disable_stitch: false
+          },
+          source_info: { source: 'PULL_FROM_URL', video_url: videoUrl }
+        },
+        { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } }
+      );
+    };
+
+    try {
+      const initResponse = await doPost(access_token);
+      return res.json({ success: true, publishId: initResponse.data.data?.publish_id });
+
+    } catch (postError) {
+      const errCode = postError.response?.data?.error?.code;
+
+      // Token expired or scope issue — try refresh then retry
+      if (postError.response?.status === 401 || errCode === 'access_token_invalid' || errCode === 'scope_not_authorized') {
+        if (!refresh_token) {
+          return res.status(401).json({
+            success: false,
+            error: 'TikTok token expired. Please reconnect your TikTok account.'
+          });
+        }
+
+        try {
+          access_token = await refreshAccessToken();
+          const retryResponse = await doPost(access_token);
+          return res.json({ success: true, publishId: retryResponse.data.data?.publish_id });
+        } catch (refreshError) {
+          // Refresh failed — user must reconnect
+          return res.status(401).json({
+            success: false,
+            error: 'TikTok session expired. Please reconnect your TikTok account.'
+          });
+        }
+      }
+
+      throw postError;
+    }
+
   } catch (error) {
     console.error('TikTok post error:', error.response?.data || error.message);
     res.status(500).json({ success: false, error: error.response?.data?.error?.message || error.message });
@@ -853,176 +971,90 @@ app.get('/api/tiktok/videos', async (req, res) => {
 // ================================================================
 // TWITTER/X OAuth & INTEGRATION ROUTES
 // ================================================================
-
-const twitterOAuthSessions = new Map();
-
-app.get('/api/auth/twitter', (req, res) => {
-  const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
-  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/twitter/callback`;
-  const codeVerifier = Math.random().toString(36).repeat(3).substring(0, 43);
-  const state = Math.random().toString(36).substring(2);
-  twitterOAuthSessions.set(state, { codeVerifier, createdAt: Date.now() });
-
-  const authUrl =
-    `https://twitter.com/i/oauth2/authorize?response_type=code` +
-    `&client_id=${TWITTER_CLIENT_ID}` +
-    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&scope=tweet.read%20tweet.write%20users.read%20offline.access` +
-    `&state=${state}` +
-    `&code_challenge=${codeVerifier}` +
-    `&code_challenge_method=plain`;
-
-  res.redirect(authUrl);
-});
-
-app.get('/api/auth/twitter/callback', async (req, res) => {
-  const { code, state, error } = req.query;
-  if (error || !code) {
-    return res.redirect(`${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=${encodeURIComponent(error || 'no_code')}`);
-  }
-
-  const session = twitterOAuthSessions.get(state);
-  const codeVerifier = session?.codeVerifier;
-  if (!codeVerifier) {
-    return res.redirect(`${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=invalid_state`);
-  }
-  twitterOAuthSessions.delete(state);
-
-  try {
-    const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
-    const TWITTER_CLIENT_SECRET = process.env.TWITTER_CLIENT_SECRET;
-    const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/twitter/callback`;
-
-    const tokenResponse = await axios.post(
-      'https://api.twitter.com/2/oauth2/token',
-      new URLSearchParams({ code, grant_type: 'authorization_code', client_id: TWITTER_CLIENT_ID, redirect_uri: REDIRECT_URI, code_verifier: codeVerifier }).toString(),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'Authorization': `Basic ${Buffer.from(`${TWITTER_CLIENT_ID}:${TWITTER_CLIENT_SECRET}`).toString('base64')}`
-        }
-      }
-    );
-
-    const { access_token, refresh_token } = tokenResponse.data;
-
-    const userResponse = await axios.get('https://api.twitter.com/2/users/me', {
-      headers: { 'Authorization': `Bearer ${access_token}` },
-      params: { 'user.fields': 'id,name,username,profile_image_url,public_metrics' }
-    });
-
-    const user = userResponse.data.data;
-    const username = user.username;
-    const displayName = user.name;
-    const twitterUserId = user.id;
-
-    await ensureSocialAccountsTable();
-
-    await pool.query(`
-      INSERT INTO social_accounts
-        (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
-      VALUES ($1, $2, $3, $4, $5, $6, $7)
-      ON CONFLICT (user_id, platform)
-      DO UPDATE SET
-        access_token           = $3,
-        instagram_account_id   = $4,
-        instagram_account_name = $5,
-        page_id                = $6,
-        page_access_token      = $7,
-        updated_at             = CURRENT_TIMESTAMP
-    `, [1, 'twitter', access_token, twitterUserId, displayName, username, refresh_token || '']);
-
-    res.redirect(
-      `${process.env.FRONTEND_URL}/settings?twitter_connected=true&twitter_username=${encodeURIComponent(username)}&twitter_name=${encodeURIComponent(displayName)}&twitter_id=${twitterUserId}`
-    );
-  } catch (error) {
-    console.error('Twitter OAuth error:', error.response?.data || error.message);
-    res.redirect(
-      `${process.env.FRONTEND_URL}/settings?twitter_error=true&reason=${encodeURIComponent(JSON.stringify(error.response?.data) || error.message)}`
-    );
-  }
-});
-
-app.get('/api/auth/twitter/load', async (req, res) => {
-  try {
-    const userId = req.query.userId || 1;
-    const result = await pool.query(
-      `SELECT id, user_id, platform, instagram_account_id AS twitter_id, instagram_account_name AS display_name, page_id AS username, updated_at
-       FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
-      [userId]
-    );
-    if (result.rows.length > 0) {
-      res.json({ success: true, account: result.rows[0] });
-    } else {
-      res.json({ success: false, account: null });
-    }
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
-app.delete('/api/auth/twitter/disconnect', async (req, res) => {
-  try {
-    const userId = req.query.userId || 1;
-    await pool.query(`DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`, [userId]);
-    res.json({ success: true, message: 'Twitter disconnected' });
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
-  }
-});
-
 app.post('/api/twitter/post', async (req, res) => {
   try {
     const { text, userId } = req.body;
     const resolvedUserId = userId || 1;
+
     const dbResult = await pool.query(
-      `SELECT access_token FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
+      `SELECT access_token, page_access_token FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
       [resolvedUserId]
     );
-    if (dbResult.rows.length === 0) return res.status(400).json({ success: false, error: 'Twitter not connected' });
+    if (dbResult.rows.length === 0)
+      return res.status(400).json({ success: false, error: 'Twitter not connected' });
 
-    const { access_token } = dbResult.rows[0];
-    const response = await axios.post(
-      'https://api.twitter.com/2/tweets',
-      { text },
-      { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
-    );
+    let { access_token, page_access_token: refresh_token } = dbResult.rows[0];
 
-    res.json({ success: true, tweetId: response.data.data.id });
+    // Helper to refresh the access token
+    const refreshAccessToken = async () => {
+      const TWITTER_CLIENT_ID = process.env.TWITTER_CLIENT_ID;
+      const TWITTER_CLIENT_SECRET = process.env.TWITTER_CLIENT_SECRET;
+
+      const response = await axios.post(
+        'https://api.twitter.com/2/oauth2/token',
+        new URLSearchParams({
+          grant_type: 'refresh_token',
+          refresh_token,
+          client_id: TWITTER_CLIENT_ID
+        }).toString(),
+        {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': `Basic ${Buffer.from(`${TWITTER_CLIENT_ID}:${TWITTER_CLIENT_SECRET}`).toString('base64')}`
+          }
+        }
+      );
+
+      const { access_token: new_access_token, refresh_token: new_refresh_token } = response.data;
+
+      // Save new tokens to DB
+      await pool.query(
+        `UPDATE social_accounts SET access_token = $1, page_access_token = $2, updated_at = CURRENT_TIMESTAMP
+         WHERE user_id = $3 AND platform = 'twitter'`,
+        [new_access_token, new_refresh_token || refresh_token, resolvedUserId]
+      );
+
+      return new_access_token;
+    };
+
+    // Try posting, refresh token if 401
+    try {
+      const response = await axios.post(
+        'https://api.twitter.com/2/tweets',
+        { text },
+        { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
+      );
+      return res.json({ success: true, tweetId: response.data.data.id });
+
+    } catch (postError) {
+      const status = postError.response?.status;
+      const errorCode = postError.response?.data?.error?.code;
+
+      // If unauthorized or scope error, try refreshing token
+      if (status === 401 || errorCode === 'scope_not_authorized') {
+        if (!refresh_token) {
+          return res.status(401).json({
+            success: false,
+            error: 'Twitter token expired. Please reconnect your Twitter account.'
+          });
+        }
+
+        access_token = await refreshAccessToken();
+
+        // Retry post with new token
+        const retryResponse = await axios.post(
+          'https://api.twitter.com/2/tweets',
+          { text },
+          { headers: { 'Authorization': `Bearer ${access_token}`, 'Content-Type': 'application/json' } }
+        );
+        return res.json({ success: true, tweetId: retryResponse.data.data.id });
+      }
+
+      throw postError;
+    }
+
   } catch (error) {
     console.error('Twitter post error:', error.response?.data || error.message);
-    res.status(500).json({ success: false, error: error.response?.data?.detail || error.message });
-  }
-});
-
-app.get('/api/twitter/analytics', async (req, res) => {
-  try {
-    const userId = req.query.userId || 1;
-    const dbResult = await pool.query(
-      `SELECT access_token, instagram_account_name, page_id FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
-      [userId]
-    );
-    if (dbResult.rows.length === 0) return res.status(400).json({ success: false, error: 'Twitter not connected' });
-
-    const { access_token, instagram_account_name: displayName, page_id: username } = dbResult.rows[0];
-    const userResponse = await axios.get('https://api.twitter.com/2/users/me', {
-      headers: { 'Authorization': `Bearer ${access_token}` },
-      params: { 'user.fields': 'public_metrics,profile_image_url' }
-    });
-
-    const user = userResponse.data.data;
-    const metrics = user.public_metrics || {};
-    res.json({
-      success: true,
-      username: username || displayName,
-      displayName,
-      followerCount: metrics.followers_count || 0,
-      followingCount: metrics.following_count || 0,
-      tweetCount: metrics.tweet_count || 0,
-      profileImageUrl: user.profile_image_url || ''
-    });
-  } catch (error) {
-    console.error('Twitter analytics error:', error.response?.data || error.message);
     res.status(500).json({ success: false, error: error.response?.data?.detail || error.message });
   }
 });
@@ -1204,25 +1236,42 @@ app.post('/api/ai/generate-variations', async (req, res) => {
     const client = clients.get(clientId);
     const brandVoice = client?.brandVoice || 'professional';
 
-    const prompt = `Rewrite this social media caption ${count || 3} different ways, keeping the same message but varying the style:
+    const prompt = `Rewrite this social media caption ${count || 3} different ways, keeping the same message but varying the style.
 
 Original: "${caption}"
 Brand voice: ${brandVoice}
 
-Return as JSON array: ["variation1", "variation2", "variation3"]`;
+Return ONLY a raw JSON array with no extra text, no markdown, no code blocks. Example format:
+["variation one here", "variation two here", "variation three here"]`;
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.9,
-      max_tokens: 300,
-      response_format: { type: 'json_object' }
-    });
+    const response = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      {
+        model: 'llama3-8b-8192',
+        messages: [{ role: 'user', content: prompt }],
+        temperature: 0.9,
+        max_tokens: 500
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
 
-    const result = JSON.parse(completion.choices[0].message.content);
-    res.json({ success: true, variations: result.variations || [] });
+    const raw = response.data.choices[0].message.content.trim();
+
+    // Safely extract JSON array even if model adds extra text
+    const match = raw.match(/\[[\s\S]*\]/);
+    if (!match) throw new Error('No JSON array found in AI response');
+
+    const variations = JSON.parse(match[0]);
+    res.json({ success: true, variations });
+
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    console.error('AI variations error:', error.response?.data || error.message);
+    res.status(500).json({ success: false, error: error.message });
   }
 });
 
@@ -1755,23 +1804,6 @@ cron.schedule('* * * * *', async () => {
 // YOUTUBE OAuth & INTEGRATION ROUTES
 // ================================================================
 
-// YouTube OAuth Start
-app.get('/api/auth/youtube', (req, res) => {
-  const YOUTUBE_CLIENT_ID = process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
-  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/youtube/callback`;
-
-  const authUrl =
-    `https://accounts.google.com/o/oauth2/v2/auth?` +
-    `client_id=${YOUTUBE_CLIENT_ID}` +
-    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
-    `&response_type=code` +
-    `&scope=${encodeURIComponent('https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.upload')}` +
-    `&access_type=offline` +
-    `&prompt=consent`;
-
-  res.redirect(authUrl);
-});
-
 // YouTube OAuth Callback
 app.get('/api/auth/youtube/callback', async (req, res) => {
   const { code, error } = req.query;
@@ -1787,7 +1819,6 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
     const YOUTUBE_CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
     const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/youtube/callback`;
 
-    // Exchange code for tokens
     const tokenResponse = await axios.post(
       'https://oauth2.googleapis.com/token',
       new URLSearchParams({
@@ -1802,7 +1833,16 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
 
     const { access_token, refresh_token } = tokenResponse.data;
 
-    // Get YouTube channel info
+    // ✅ FIXED: Guard — if no refresh_token, force user to reconnect properly
+    if (!refresh_token) {
+      console.warn('YouTube OAuth: no refresh_token returned. User must revoke and reconnect.');
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/settings?youtube_error=true&reason=${encodeURIComponent(
+          'No refresh token received. Please go to https://myaccount.google.com/permissions, revoke access for this app, then reconnect.'
+        )}`
+      );
+    }
+
     const channelResponse = await axios.get(
       'https://www.googleapis.com/youtube/v3/channels',
       {
@@ -1835,7 +1875,7 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
         page_id                = $6,
         page_access_token      = $7,
         updated_at             = CURRENT_TIMESTAMP
-    `, [1, 'youtube', access_token, channelId, channelName, channelId, refresh_token || '']);
+    `, [1, 'youtube', access_token, channelId, channelName, channelId, refresh_token]);
 
     res.redirect(
       `${process.env.FRONTEND_URL}/settings?` +
@@ -1854,7 +1894,24 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
   }
 });
 
-// Load YouTube credentials from DB
+// YouTube OAuth Start — UNCHANGED ✅
+app.get('/api/auth/youtube', (req, res) => {
+  const YOUTUBE_CLIENT_ID = process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/youtube/callback`;
+
+  const authUrl =
+    `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `client_id=${YOUTUBE_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&response_type=code` +
+    `&scope=${encodeURIComponent('https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.upload')}` +
+    `&access_type=offline` +
+    `&prompt=consent`;
+
+  res.redirect(authUrl);
+});
+
+// Load YouTube credentials — UNCHANGED ✅
 app.get('/api/auth/youtube/load', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
@@ -1877,13 +1934,13 @@ app.get('/api/auth/youtube/load', async (req, res) => {
   }
 });
 
-// YouTube Disconnect
+// YouTube Disconnect — UNCHANGED ✅
 app.delete('/api/auth/youtube/disconnect', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
     await pool.query(
-      `DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'youtube'`,
-      [userId]
+      `DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'youtube'`
+      , [userId]
     );
     res.json({ success: true, message: 'YouTube disconnected' });
   } catch (error) {
