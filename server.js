@@ -1752,6 +1752,146 @@ cron.schedule('* * * * *', async () => {
 });
 
 // ================================================================
+// YOUTUBE OAuth & INTEGRATION ROUTES
+// ================================================================
+
+// YouTube OAuth Start
+app.get('/api/auth/youtube', (req, res) => {
+  const YOUTUBE_CLIENT_ID = process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+  const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/youtube/callback`;
+
+  const authUrl =
+    `https://accounts.google.com/o/oauth2/v2/auth?` +
+    `client_id=${YOUTUBE_CLIENT_ID}` +
+    `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
+    `&response_type=code` +
+    `&scope=${encodeURIComponent('https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/youtube.upload')}` +
+    `&access_type=offline` +
+    `&prompt=consent`;
+
+  res.redirect(authUrl);
+});
+
+// YouTube OAuth Callback
+app.get('/api/auth/youtube/callback', async (req, res) => {
+  const { code, error } = req.query;
+
+  if (error || !code) {
+    return res.redirect(
+      `${process.env.FRONTEND_URL}/settings?youtube_error=true&reason=${encodeURIComponent(error || 'no_code')}`
+    );
+  }
+
+  try {
+    const YOUTUBE_CLIENT_ID = process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
+    const YOUTUBE_CLIENT_SECRET = process.env.YOUTUBE_CLIENT_SECRET || process.env.GOOGLE_CLIENT_SECRET;
+    const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/youtube/callback`;
+
+    // Exchange code for tokens
+    const tokenResponse = await axios.post(
+      'https://oauth2.googleapis.com/token',
+      new URLSearchParams({
+        code,
+        client_id: YOUTUBE_CLIENT_ID,
+        client_secret: YOUTUBE_CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI,
+        grant_type: 'authorization_code'
+      }).toString(),
+      { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+    );
+
+    const { access_token, refresh_token } = tokenResponse.data;
+
+    // Get YouTube channel info
+    const channelResponse = await axios.get(
+      'https://www.googleapis.com/youtube/v3/channels',
+      {
+        headers: { Authorization: `Bearer ${access_token}` },
+        params: { part: 'snippet,statistics', mine: true }
+      }
+    );
+
+    const channel = channelResponse.data.items?.[0];
+    if (!channel) {
+      return res.redirect(
+        `${process.env.FRONTEND_URL}/settings?youtube_error=true&reason=${encodeURIComponent('No YouTube channel found')}`
+      );
+    }
+
+    const channelId = channel.id;
+    const channelName = channel.snippet?.title || 'YouTube Channel';
+
+    await ensureSocialAccountsTable();
+
+    await pool.query(`
+      INSERT INTO social_accounts
+        (user_id, platform, access_token, instagram_account_id, instagram_account_name, page_id, page_access_token)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (user_id, platform)
+      DO UPDATE SET
+        access_token           = $3,
+        instagram_account_id   = $4,
+        instagram_account_name = $5,
+        page_id                = $6,
+        page_access_token      = $7,
+        updated_at             = CURRENT_TIMESTAMP
+    `, [1, 'youtube', access_token, channelId, channelName, channelId, refresh_token || '']);
+
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?` +
+      `youtube_connected=true` +
+      `&youtube_channel=${encodeURIComponent(channelName)}` +
+      `&youtube_id=${encodeURIComponent(channelId)}`
+    );
+
+  } catch (error) {
+    console.error('YouTube OAuth error:', error.response?.data || error.message);
+    res.redirect(
+      `${process.env.FRONTEND_URL}/settings?youtube_error=true&reason=${encodeURIComponent(
+        error.response?.data?.error_description || error.response?.data?.error || error.message
+      )}`
+    );
+  }
+});
+
+// Load YouTube credentials from DB
+app.get('/api/auth/youtube/load', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    await ensureSocialAccountsTable();
+
+    const result = await pool.query(
+      `SELECT id, user_id, platform, instagram_account_id, instagram_account_name, page_id, updated_at
+       FROM social_accounts WHERE user_id = $1 AND platform = 'youtube'`,
+      [userId]
+    );
+
+    if (result.rows.length > 0) {
+      res.json({ success: true, account: result.rows[0] });
+    } else {
+      res.json({ success: false, account: null });
+    }
+  } catch (error) {
+    console.error('YouTube load error:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// YouTube Disconnect
+app.delete('/api/auth/youtube/disconnect', async (req, res) => {
+  try {
+    const userId = req.query.userId || 1;
+    await pool.query(
+      `DELETE FROM social_accounts WHERE user_id = $1 AND platform = 'youtube'`,
+      [userId]
+    );
+    res.json({ success: true, message: 'YouTube disconnected' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ================================================================
 // START SERVER
 // ================================================================
 
@@ -1767,5 +1907,5 @@ ensureSocialAccountsTable()
     console.error('Failed to initialize DB tables:', err.message);
     process.exit(1);
   });
-  
+
 module.exports = app;
