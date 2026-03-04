@@ -449,8 +449,7 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
       return res.redirect(`${process.env.FRONTEND_URL}/settings?facebook_error=true&reason=no_pages`);
     }
 
-    const page = pagesResponse.data.data[0];
-    const pageAccessToken = page.access_token;
+   const page = pagesResponse.data.data[0];
     const pageId = page.id;
     const pageName = page.name;
 
