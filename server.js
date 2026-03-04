@@ -1,4 +1,4 @@
-﻿require('dotenv').config();
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
@@ -42,7 +42,7 @@ const autoReplies = [];
 const analytics = new Map();
 
 // ================================================================
-// SHARED HELPER — ensure social_accounts table exists
+// SHARED HELPER � ensure social_accounts table exists
 // ================================================================
 
 async function ensureSocialAccountsTable() {
@@ -531,7 +531,7 @@ app.post('/api/auth/facebook/save', async (req, res) => {
   }
 });
 
-// ✅ FIXED - only this route was changed
+// ? FIXED - only this route was changed
 app.post('/api/facebook/post', async (req, res) => {
   try {
     const { message, link, userId } = req.body;
@@ -567,7 +567,7 @@ app.post('/api/facebook/post', async (req, res) => {
     } catch (postError) {
       const fbError = postError.response?.data?.error;
 
-      // Token expired or invalid — clear stale token and prompt reconnect
+      // Token expired or invalid � clear stale token and prompt reconnect
       if (fbError?.code === 190 || fbError?.code === 102 || fbError?.type === 'OAuthException') {
         await pool.query(
           `UPDATE social_accounts SET page_access_token = '', updated_at = CURRENT_TIMESTAMP
@@ -718,7 +718,7 @@ app.get('/api/auth/tiktok', (req, res) => {
   const authUrl =
     `https://www.tiktok.com/v2/auth/authorize?` +
     `client_key=${TIKTOK_CLIENT_KEY}` +
-    `&scope=user.info.basic,video.publish,video.upload` +  // ✅ FIXED: added required posting scopes
+    `&scope=user.info.basic,video.publish,video.upload` +  // ? FIXED: added required posting scopes
     `&response_type=code` +
     `&redirect_uri=${encodeURIComponent(REDIRECT_URI)}` +
     `&state=${csrfState}`;
@@ -813,7 +813,7 @@ app.delete('/api/auth/tiktok/disconnect', async (req, res) => {
   }
 });
 
-// ✅ FIXED - token refresh + scope error handling added
+// ? FIXED - token refresh + scope error handling added
 app.post('/api/tiktok/post/video', async (req, res) => {
   try {
     const { videoUrl, caption, userId } = req.body;
@@ -885,7 +885,7 @@ app.post('/api/tiktok/post/video', async (req, res) => {
     } catch (postError) {
       const errCode = postError.response?.data?.error?.code;
 
-      // Token expired or scope issue — try refresh then retry
+      // Token expired or scope issue � try refresh then retry
       if (postError.response?.status === 401 || errCode === 'access_token_invalid' || errCode === 'scope_not_authorized') {
         if (!refresh_token) {
           return res.status(401).json({
@@ -899,7 +899,7 @@ app.post('/api/tiktok/post/video', async (req, res) => {
           const retryResponse = await doPost(access_token);
           return res.json({ success: true, publishId: retryResponse.data.data?.publish_id });
         } catch (refreshError) {
-          // Refresh failed — user must reconnect
+          // Refresh failed � user must reconnect
           return res.status(401).json({
             success: false,
             error: 'TikTok session expired. Please reconnect your TikTok account.'
@@ -1647,7 +1647,7 @@ app.post('/api/auto-reply/:clientId/enable', (req, res) => {
   client.autoReplyRules = rules || {
     keywords: {},
     sentiment: {
-      positive: 'Thank you so much! 🙌',
+      positive: 'Thank you so much! ??',
       negative: 'We apologize for any inconvenience. Please DM us so we can help!',
       neutral: 'Thanks for your comment!'
     }
@@ -1831,7 +1831,7 @@ app.get('/health', (req, res) => {
 });
 
 // ================================================================
-// CRON SCHEDULER — Auto-publish scheduled posts
+// CRON SCHEDULER � Auto-publish scheduled posts
 // ================================================================
 
 cron.schedule('* * * * *', async () => {
@@ -1895,7 +1895,7 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
 
     const { access_token, refresh_token } = tokenResponse.data;
 
-    // ✅ FIXED: Guard — if no refresh_token, force user to reconnect properly
+    // ? FIXED: Guard � if no refresh_token, force user to reconnect properly
     if (!refresh_token) {
       console.warn('YouTube OAuth: no refresh_token returned. User must revoke and reconnect.');
       return res.redirect(
@@ -1956,7 +1956,7 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
   }
 });
 
-// YouTube OAuth Start — UNCHANGED ✅
+// YouTube OAuth Start � UNCHANGED ?
 app.get('/api/auth/youtube', (req, res) => {
   const YOUTUBE_CLIENT_ID = process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
   const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/youtube/callback`;
@@ -1973,7 +1973,7 @@ app.get('/api/auth/youtube', (req, res) => {
   res.redirect(authUrl);
 });
 
-// Load YouTube credentials — UNCHANGED ✅
+// Load YouTube credentials � UNCHANGED ?
 app.get('/api/auth/youtube/load', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
@@ -1996,7 +1996,7 @@ app.get('/api/auth/youtube/load', async (req, res) => {
   }
 });
 
-// YouTube Disconnect — UNCHANGED ✅
+// YouTube Disconnect � UNCHANGED ?
 app.delete('/api/auth/youtube/disconnect', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
