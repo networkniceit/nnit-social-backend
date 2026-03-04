@@ -452,6 +452,7 @@ app.get('/api/auth/facebook/callback', async (req, res) => {
    const page = pagesResponse.data.data[0];
     const pageId = page.id;
     const pageName = page.name;
+    const pageAccessToken = page.access_token;
 
     await ensureSocialAccountsTable();
 
