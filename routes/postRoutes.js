@@ -100,8 +100,8 @@ router.post('/tiktok/post', async (req, res) => {
     if (!videoFile) return res.status(400).json({ error: 'TikTok requires a video file.' });
 
     const accessToken = tokens.access_token;
-    const videoBuffer = videoFile.data;
-    const videoSize   = videoBuffer.length;
+    const videoBuffer = Buffer.from(videoFile.data);
+    const videoSize   = videoBuffer.byteLength;
 
     const initRes = await axios.post(
       'https://open.tiktokapis.com/v2/post/publish/video/init/',
