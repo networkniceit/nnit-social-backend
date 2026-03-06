@@ -1,4 +1,4 @@
-require('dotenv').config();
+ï»¿require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const cron = require('node-cron');
@@ -12,9 +12,10 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
+const fileUpload = require('express-fileupload');
+app.use(fileUpload());
 app.use('/api', postRoutes);
 app.use('/api/upload', uploadRoutes);
-
 // ================================================================
 // DATABASE CONNECTION
 // ================================================================
@@ -42,7 +43,7 @@ const autoReplies = [];
 const analytics = new Map();
 
 // ================================================================
-// SHARED HELPER — ensure social_accounts table exists
+// SHARED HELPER ï¿½ ensure social_accounts table exists
 // ================================================================
 
 async function ensureSocialAccountsTable() {
@@ -568,7 +569,7 @@ app.post('/api/facebook/post', async (req, res) => {
     } catch (postError) {
       const fbError = postError.response?.data?.error;
 
-      // Token expired or invalid — clear stale token and prompt reconnect
+      // Token expired or invalid ï¿½ clear stale token and prompt reconnect
       if (fbError?.code === 190 || fbError?.code === 102 || fbError?.type === 'OAuthException') {
         await pool.query(
           `UPDATE social_accounts SET page_access_token = '', updated_at = CURRENT_TIMESTAMP
@@ -886,7 +887,7 @@ app.post('/api/tiktok/post/video', async (req, res) => {
     } catch (postError) {
       const errCode = postError.response?.data?.error?.code;
 
-      // Token expired or scope issue — try refresh then retry
+      // Token expired or scope issue ï¿½ try refresh then retry
       if (postError.response?.status === 401 || errCode === 'access_token_invalid' || errCode === 'scope_not_authorized') {
         if (!refresh_token) {
           return res.status(401).json({
@@ -900,7 +901,7 @@ app.post('/api/tiktok/post/video', async (req, res) => {
           const retryResponse = await doPost(access_token);
           return res.json({ success: true, publishId: retryResponse.data.data?.publish_id });
         } catch (refreshError) {
-          // Refresh failed — user must reconnect
+          // Refresh failed ï¿½ user must reconnect
           return res.status(401).json({
             success: false,
             error: 'TikTok session expired. Please reconnect your TikTok account.'
@@ -1832,7 +1833,7 @@ app.get('/health', (req, res) => {
 });
 
 // ================================================================
-// CRON SCHEDULER — Auto-publish scheduled posts
+// CRON SCHEDULER ï¿½ Auto-publish scheduled posts
 // ================================================================
 
 cron.schedule('* * * * *', async () => {
@@ -1896,7 +1897,7 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
 
     const { access_token, refresh_token } = tokenResponse.data;
 
-    // ? FIXED: Guard — if no refresh_token, force user to reconnect properly
+    // ? FIXED: Guard ï¿½ if no refresh_token, force user to reconnect properly
     if (!refresh_token) {
       console.warn('YouTube OAuth: no refresh_token returned. User must revoke and reconnect.');
       return res.redirect(
@@ -1957,7 +1958,7 @@ app.get('/api/auth/youtube/callback', async (req, res) => {
   }
 });
 
-// YouTube OAuth Start — UNCHANGED ?
+// YouTube OAuth Start ï¿½ UNCHANGED ?
 app.get('/api/auth/youtube', (req, res) => {
   const YOUTUBE_CLIENT_ID = process.env.YOUTUBE_CLIENT_ID || process.env.GOOGLE_CLIENT_ID;
   const REDIRECT_URI = `${process.env.BACKEND_URL}/api/auth/youtube/callback`;
@@ -1974,7 +1975,7 @@ app.get('/api/auth/youtube', (req, res) => {
   res.redirect(authUrl);
 });
 
-// Load YouTube credentials — UNCHANGED ?
+// Load YouTube credentials ï¿½ UNCHANGED ?
 app.get('/api/auth/youtube/load', async (req, res) => {
   try {
     const userId = req.query.userId || 1;
@@ -1997,7 +1998,7 @@ app.get('/api/auth/youtube/load', async (req, res) => {
   }
 });
 
-// YouTube Disconnect — UNCHANGED ?
+// YouTube Disconnect ï¿½ UNCHANGED ?
 app.delete('/api/auth/youtube/disconnect', async (req, res) => {
   try {
     const userId = req.query.userId || 1;

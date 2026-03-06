@@ -63,7 +63,6 @@ async function getTokens(platform, userId = 1) {
   };
 }
 
-// ✅ UNCHANGED
 router.post('/instagram/post', async (req, res) => {
   try {
     const { content, imageUrl } = req.body;
@@ -91,36 +90,59 @@ router.post('/instagram/post', async (req, res) => {
   }
 });
 
-// ✅ UNCHANGED
 router.post('/tiktok/post', async (req, res) => {
   try {
-    const { content, videoUrl } = req.body;
+    const { content } = req.body;
+    const videoFile = req.files?.video;
     const tokens = await getTokens('tiktok');
+
     if (!tokens) return res.status(401).json({ error: 'TikTok not connected' });
-    if (!videoUrl) return res.status(400).json({ error: 'TikTok requires a video URL.' });
+    if (!videoFile) return res.status(400).json({ error: 'TikTok requires a video file.' });
+
     const accessToken = tokens.access_token;
+    const videoBuffer = videoFile.data;
+    const videoSize   = videoBuffer.length;
+
     const initRes = await axios.post(
       'https://open.tiktokapis.com/v2/post/publish/video/init/',
       {
         post_info: {
-          title:           content.substring(0, 150),
-          privacy_level:   'PUBLIC_TO_EVERYONE',
-          disable_duet:    false,
-          disable_comment: false,
-          disable_stitch:  false,
+          title:             content.substring(0, 150),
+          privacy_level:     'PUBLIC_TO_EVERYONE',
+          disable_duet:      false,
+          disable_comment:   false,
+          disable_stitch:    false,
         },
-        source_info: { source: 'PULL_FROM_URL', video_url: videoUrl },
+        source_info: {
+          source:            'FILE_UPLOAD',
+          video_size:        videoSize,
+          chunk_size:        videoSize,
+          total_chunk_count: 1,
+        },
       },
       { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' } }
     );
-    res.json({ success: true, publishId: initRes.data?.data?.publish_id, platform: 'tiktok' });
+
+    const uploadUrl = initRes.data?.data?.upload_url;
+    const publishId = initRes.data?.data?.publish_id;
+
+    if (!uploadUrl) return res.status(500).json({ error: 'TikTok did not return upload URL' });
+
+    await axios.put(uploadUrl, videoBuffer, {
+      headers: {
+        'Content-Type':   'video/mp4',
+        'Content-Range':  `bytes 0-${videoSize - 1}/${videoSize}`,
+        'Content-Length': videoSize,
+      },
+    });
+
+    res.json({ success: true, publishId, platform: 'tiktok' });
   } catch (err) {
     console.error('TikTok post error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data?.error?.message || err.message });
   }
 });
 
-// ✅ FIXED — token refresh added
 router.post('/youtube/post', async (req, res) => {
   try {
     const { content, videoUrl, title, userId } = req.body;
@@ -133,7 +155,6 @@ router.post('/youtube/post', async (req, res) => {
     let accessToken = tokens.access_token;
     const refreshToken = tokens.refresh_token;
 
-    // Helper: refresh Google access token
     const refreshAccessToken = async () => {
       const response = await axios.post(
         'https://oauth2.googleapis.com/token',
@@ -146,7 +167,6 @@ router.post('/youtube/post', async (req, res) => {
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
       );
       const newAccessToken = response.data.access_token;
-      // Save new access token to DB
       await pool.query(
         `UPDATE social_accounts SET access_token = $1, updated_at = CURRENT_TIMESTAMP
          WHERE user_id = $2 AND platform = 'youtube'`,
@@ -155,7 +175,6 @@ router.post('/youtube/post', async (req, res) => {
       return newAccessToken;
     };
 
-    // Helper: attempt YouTube upload
     const doUpload = async (token) => {
       return await axios.post(
         'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
@@ -174,40 +193,27 @@ router.post('/youtube/post', async (req, res) => {
     try {
       const uploadRes = await doUpload(accessToken);
       return res.json({ success: true, videoId: uploadRes.data.id, platform: 'youtube' });
-
     } catch (uploadErr) {
-      const status = uploadErr.response?.status;
-
-      // Token expired — refresh and retry once
-      if (status === 401) {
+      if (uploadErr.response?.status === 401) {
         if (!refreshToken) {
-          return res.status(401).json({
-            success: false,
-            error: 'YouTube token expired. Please reconnect your YouTube account.'
-          });
+          return res.status(401).json({ success: false, error: 'YouTube token expired. Please reconnect your YouTube account.' });
         }
         try {
           accessToken = await refreshAccessToken();
           const retryRes = await doUpload(accessToken);
           return res.json({ success: true, videoId: retryRes.data.id, platform: 'youtube' });
         } catch (refreshErr) {
-          return res.status(401).json({
-            success: false,
-            error: 'YouTube session expired. Please reconnect your YouTube account.'
-          });
+          return res.status(401).json({ success: false, error: 'YouTube session expired. Please reconnect your YouTube account.' });
         }
       }
-
       throw uploadErr;
     }
-
   } catch (err) {
     console.error('YouTube post error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data?.error?.message || err.message });
   }
 });
 
-// ✅ FIXED — token refresh added
 router.post('/twitter/post', async (req, res) => {
   try {
     const { content, userId } = req.body;
@@ -218,19 +224,15 @@ router.post('/twitter/post', async (req, res) => {
 
     let accessToken = tokens.access_token;
 
-    // Helper: refresh Twitter access token
     const refreshAccessToken = async () => {
       const TWITTER_CLIENT_ID     = process.env.TWITTER_CLIENT_ID;
       const TWITTER_CLIENT_SECRET = process.env.TWITTER_CLIENT_SECRET;
-
-      // Get refresh token from DB
       const dbResult = await pool.query(
         `SELECT page_access_token FROM social_accounts WHERE user_id = $1 AND platform = 'twitter'`,
         [resolvedUserId]
       );
       const refreshToken = dbResult.rows[0]?.page_access_token;
       if (!refreshToken) throw new Error('No refresh token available');
-
       const response = await axios.post(
         'https://api.twitter.com/2/oauth2/token',
         new URLSearchParams({
@@ -245,19 +247,15 @@ router.post('/twitter/post', async (req, res) => {
           }
         }
       );
-
       const { access_token: newAccessToken, refresh_token: newRefreshToken } = response.data;
-
       await pool.query(
         `UPDATE social_accounts SET access_token = $1, page_access_token = $2, updated_at = CURRENT_TIMESTAMP
          WHERE user_id = $3 AND platform = 'twitter'`,
         [newAccessToken, newRefreshToken || refreshToken, resolvedUserId]
       );
-
       return newAccessToken;
     };
 
-    // Helper: attempt tweet
     const doTweet = async (token) => {
       return await axios.post(
         'https://api.twitter.com/2/tweets',
@@ -269,34 +267,26 @@ router.post('/twitter/post', async (req, res) => {
     try {
       const tweetRes = await doTweet(accessToken);
       return res.json({ success: true, tweetId: tweetRes.data?.data?.id, platform: 'twitter' });
-
     } catch (tweetErr) {
-      const status    = tweetErr.response?.status;
-      const errCode   = tweetErr.response?.data?.error?.code;
-
+      const status  = tweetErr.response?.status;
+      const errCode = tweetErr.response?.data?.error?.code;
       if (status === 401 || errCode === 'scope_not_authorized') {
         try {
           accessToken = await refreshAccessToken();
           const retryRes = await doTweet(accessToken);
           return res.json({ success: true, tweetId: retryRes.data?.data?.id, platform: 'twitter' });
         } catch (refreshErr) {
-          return res.status(401).json({
-            success: false,
-            error: 'Twitter session expired. Please reconnect your Twitter account.'
-          });
+          return res.status(401).json({ success: false, error: 'Twitter session expired. Please reconnect your Twitter account.' });
         }
       }
-
       throw tweetErr;
     }
-
   } catch (err) {
     console.error('Twitter post error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data?.error?.message || err.message });
   }
 });
 
-// ✅ UNCHANGED
 router.post('/facebook/post', async (req, res) => {
   try {
     const { content, imageUrl } = req.body;
