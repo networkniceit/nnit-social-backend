@@ -116,7 +116,7 @@ router.post('/tiktok/post', async (req, res) => {
         source_info: {
           source:            'FILE_UPLOAD',
           video_size:        videoSize,
-          chunk_size:        Math.max(videoSize, 5 * 1024 * 1024),
+          chunk_size: videoSize,
           total_chunk_count: 1,
         },
       },
