@@ -99,19 +99,24 @@ router.post('/instagram/post', async (req, res) => {
     const creationId = containerRes.data.id;
     if (!creationId) return res.status(500).json({ error: 'Failed to create Instagram media container' });
 
-    // Poll until Instagram has finished processing the media
-    let status = 'IN_PROGRESS';
-    let attempts = 0;
-    while (status !== 'FINISHED' && attempts < 20) {
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      const statusRes = await axios.get(
-        `https://graph.facebook.com/v18.0/${creationId}?fields=status_code&access_token=${accessToken}`
-      );
-      status = statusRes.data.status_code;
-      attempts++;
-      if (status === 'ERROR') throw new Error('Instagram media processing failed');
+    if (videoUrl || mediaType === 'REELS') {
+      // Poll status for video/reels only
+      let status = 'IN_PROGRESS';
+      let attempts = 0;
+      while (status !== 'FINISHED' && attempts < 20) {
+        await new Promise(resolve => setTimeout(resolve, 3000));
+        const statusRes = await axios.get(
+          `https://graph.facebook.com/v18.0/${creationId}?fields=status_code&access_token=${accessToken}`
+        );
+        status = statusRes.data.status_code;
+        attempts++;
+        if (status === 'ERROR') throw new Error('Instagram media processing failed');
+      }
+      if (status !== 'FINISHED') throw new Error('Instagram media processing timed out');
+    } else {
+      // Image posts just need a short delay
+      await new Promise(resolve => setTimeout(resolve, 5000));
     }
-    if (status !== 'FINISHED') throw new Error('Instagram media processing timed out');
 
     const publishRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
