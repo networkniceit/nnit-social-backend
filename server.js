@@ -1309,7 +1309,7 @@ Return ONLY a raw JSON array with no extra text, no markdown, no code blocks. Ex
     const response = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
-        model: 'llama3-8b-8192',
+       model: 'llama3-70b-8192',
         messages: [{ role: 'user', content: prompt }],
         temperature: 0.9,
         max_tokens: 500
