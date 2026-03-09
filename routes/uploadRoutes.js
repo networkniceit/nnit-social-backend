@@ -3,7 +3,6 @@ const router = express.Router();
 const multer = require('multer');
 const { v2: cloudinary } = require('cloudinary');
 const streamifier = require('streamifier');
-
 const upload = multer({ storage: multer.memoryStorage() });
 
 cloudinary.config({
@@ -26,6 +25,24 @@ router.post('/image', upload.single('image'), async (req, res) => {
     res.json({ success: true, url: result.secure_url });
   } catch (err) {
     console.error('Upload error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/video', upload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    const streamUpload = () => new Promise((resolve, reject) => {
+      const stream = cloudinary.uploader.upload_stream(
+        { folder: 'social-posts', resource_type: 'video' },
+        (error, result) => { if (result) resolve(result); else reject(error); }
+      );
+      streamifier.createReadStream(req.file.buffer).pipe(stream);
+    });
+    const result = await streamUpload();
+    res.json({ success: true, url: result.secure_url });
+  } catch (err) {
+    console.error('Video upload error:', err);
     res.status(500).json({ error: err.message });
   }
 });
