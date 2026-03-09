@@ -70,9 +70,10 @@ router.post('/instagram/post', async (req, res) => {
     const igUserId = tokens.extra_data?.instagram_business_account_id || tokens.extra_data?.ig_user_id;
     if (!igUserId) return res.status(400).json({ error: 'Instagram Business Account ID not found. Reconnect Instagram.' });
 
+    const isVideo = !!(videoUrl || mediaType === 'REELS');
     let containerPayload;
 
-    if (videoUrl || mediaType === 'REELS') {
+    if (isVideo) {
       if (!videoUrl) return res.status(400).json({ error: 'Instagram Reels requires a video URL.' });
       containerPayload = {
         media_type: 'REELS',
@@ -91,24 +92,27 @@ router.post('/instagram/post', async (req, res) => {
       };
     }
 
+    console.log('Instagram: creating container, isVideo=', isVideo);
     const containerRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media`,
       containerPayload
     );
 
     const creationId = containerRes.data.id;
+    console.log('Instagram: container created, id=', creationId);
     if (!creationId) return res.status(500).json({ error: 'Failed to create Instagram media container' });
 
-    if (videoUrl || mediaType === 'REELS') {
-      // Poll status for video/reels only
+    if (isVideo) {
+      // Poll status for video/reels
       let status = 'IN_PROGRESS';
       let attempts = 0;
-      while (status !== 'FINISHED' && attempts < 20) {
-        await new Promise(resolve => setTimeout(resolve, 3000));
+      while (status !== 'FINISHED' && attempts < 60) {
+        await new Promise(resolve => setTimeout(resolve, 5000));
         const statusRes = await axios.get(
           `https://graph.facebook.com/v18.0/${creationId}?fields=status_code&access_token=${accessToken}`
         );
         status = statusRes.data.status_code;
+        console.log(`Instagram: poll attempt ${attempts + 1}, status_code=${status}`);
         attempts++;
         if (status === 'ERROR') throw new Error('Instagram media processing failed');
       }
@@ -118,6 +122,7 @@ router.post('/instagram/post', async (req, res) => {
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
 
+    console.log('Instagram: publishing container id=', creationId);
     const publishRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
       { creation_id: creationId, access_token: accessToken }
