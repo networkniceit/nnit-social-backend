@@ -1295,7 +1295,7 @@ Return only the caption, nothing else.`;
 app.post('/api/ai/generate-variations', async (req, res) => {
   try {
     const { caption, count, clientId } = req.body;
-    const client = clients.get(clientId);
+    const client = null;
     const brandVoice = client?.brandVoice || 'professional';
 
     const prompt = `Rewrite this social media caption ${count || 3} different ways, keeping the same message but varying the style.
