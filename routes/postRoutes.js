@@ -99,7 +99,19 @@ router.post('/instagram/post', async (req, res) => {
     const creationId = containerRes.data.id;
     if (!creationId) return res.status(500).json({ error: 'Failed to create Instagram media container' });
 
-   await new Promise(resolve => setTimeout(resolve, 15000));
+    // Poll until Instagram has finished processing the media
+    let status = 'IN_PROGRESS';
+    let attempts = 0;
+    while (status !== 'FINISHED' && attempts < 20) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
+      const statusRes = await axios.get(
+        `https://graph.facebook.com/v18.0/${creationId}?fields=status_code&access_token=${accessToken}`
+      );
+      status = statusRes.data.status_code;
+      attempts++;
+      if (status === 'ERROR') throw new Error('Instagram media processing failed');
+    }
+    if (status !== 'FINISHED') throw new Error('Instagram media processing timed out');
 
     const publishRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
@@ -135,7 +147,7 @@ router.post('/tiktok/post', async (req, res) => {
           disable_stitch:  false,
         },
         source_info: {
-          source:   'PULL_FROM_URL',
+          source:    'PULL_FROM_URL',
           video_url: videoUrl,
         },
       },
