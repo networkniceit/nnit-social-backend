@@ -12,8 +12,6 @@ const uploadRoutes = require('./routes/uploadRoutes');
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
-const fileUpload = require('express-fileupload');
-app.use(fileUpload());
 app.use('/api', postRoutes);
 app.use('/api/upload', uploadRoutes);
 // ================================================================
