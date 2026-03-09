@@ -34,12 +34,8 @@ async function getTokens(platform, userId = 1) {
     };
   }
   if (platform === 'twitter') {
-    const decoded = Buffer.from(row.access_token, 'base64').toString('utf8');
-    const [oauth_token, oauth_token_secret] = decoded.split(':');
     return {
       access_token: row.page_access_token || row.access_token,
-      oauth_token,
-      oauth_token_secret,
       extra_data: {}
     };
   }
@@ -63,27 +59,53 @@ async function getTokens(platform, userId = 1) {
   };
 }
 
+// ─── INSTAGRAM ───────────────────────────────────────────────────────────────
 router.post('/instagram/post', async (req, res) => {
   try {
-    const { content, imageUrl } = req.body;
+    const { content, imageUrl, videoUrl, mediaType } = req.body;
     const tokens = await getTokens('instagram');
     if (!tokens) return res.status(401).json({ error: 'Instagram not connected' });
+
     const accessToken = tokens.access_token;
-    const extraData   = tokens.extra_data || {};
-    const igUserId    = extraData.instagram_business_account_id || extraData.ig_user_id;
+    const igUserId = tokens.extra_data?.instagram_business_account_id || tokens.extra_data?.ig_user_id;
     if (!igUserId) return res.status(400).json({ error: 'Instagram Business Account ID not found. Reconnect Instagram.' });
-    if (!imageUrl) return res.status(400).json({ error: 'Instagram requires an image URL.' });
+
+    let containerPayload;
+
+    if (videoUrl || mediaType === 'REELS') {
+      if (!videoUrl) return res.status(400).json({ error: 'Instagram Reels requires a video URL.' });
+      containerPayload = {
+        media_type: 'REELS',
+        video_url: videoUrl,
+        caption: content,
+        share_to_feed: true,
+        access_token: accessToken
+      };
+    } else {
+      if (!imageUrl) return res.status(400).json({ error: 'Instagram requires an image URL.' });
+      containerPayload = {
+        media_type: 'IMAGE',
+        image_url: imageUrl,
+        caption: content,
+        access_token: accessToken
+      };
+    }
+
     const containerRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media`,
-      { caption: content, image_url: imageUrl, media_type: 'IMAGE', access_token: accessToken }
+      containerPayload
     );
+
     const creationId = containerRes.data.id;
     if (!creationId) return res.status(500).json({ error: 'Failed to create Instagram media container' });
-    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    await new Promise(resolve => setTimeout(resolve, 5000));
+
     const publishRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
       { creation_id: creationId, access_token: accessToken }
     );
+
     res.json({ success: true, postId: publishRes.data.id, platform: 'instagram' });
   } catch (err) {
     console.error('Instagram post error:', err.response?.data || err.message);
@@ -91,52 +113,36 @@ router.post('/instagram/post', async (req, res) => {
   }
 });
 
+// ─── TIKTOK ──────────────────────────────────────────────────────────────────
 router.post('/tiktok/post', async (req, res) => {
   try {
-    const { content } = req.body;
-    const videoFile = req.files?.video;
+    const { content, videoUrl } = req.body;
     const tokens = await getTokens('tiktok');
 
     if (!tokens) return res.status(401).json({ error: 'TikTok not connected' });
-    if (!videoFile) return res.status(400).json({ error: 'TikTok requires a video file.' });
+    if (!videoUrl) return res.status(400).json({ error: 'TikTok requires a video URL.' });
 
     const accessToken = tokens.access_token;
-    const videoBuffer = Buffer.from(videoFile.data);
-    const videoSize   = videoBuffer.byteLength;
 
     const initRes = await axios.post(
       'https://open.tiktokapis.com/v2/post/publish/video/init/',
       {
         post_info: {
-          title:             content.substring(0, 150),
-          privacy_level:     'PUBLIC_TO_EVERYONE',
-          disable_duet:      false,
-          disable_comment:   false,
-          disable_stitch:    false,
+          title:           content.substring(0, 150),
+          privacy_level:   'PUBLIC_TO_EVERYONE',
+          disable_duet:    false,
+          disable_comment: false,
+          disable_stitch:  false,
         },
         source_info: {
-          source:            'FILE_UPLOAD',
-          video_size:        videoSize,
-          chunk_size:        videoSize,
-          total_chunk_count: 1,
+          source:   'PULL_FROM_URL',
+          video_url: videoUrl,
         },
       },
       { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' } }
     );
 
-    const uploadUrl = initRes.data?.data?.upload_url;
     const publishId = initRes.data?.data?.publish_id;
-
-    if (!uploadUrl) return res.status(500).json({ error: 'TikTok did not return upload URL' });
-
-    await axios.put(uploadUrl, videoBuffer, {
-      headers: {
-        'Content-Type':   'video/mp4',
-        'Content-Range':  `bytes 0-${videoSize - 1}/${videoSize}`,
-        'Content-Length': videoSize,
-      },
-    });
-
     res.json({ success: true, publishId, platform: 'tiktok' });
   } catch (err) {
     console.error('TikTok post error:', err.response?.data || err.message);
@@ -144,6 +150,7 @@ router.post('/tiktok/post', async (req, res) => {
   }
 });
 
+// ─── YOUTUBE ─────────────────────────────────────────────────────────────────
 router.post('/youtube/post', async (req, res) => {
   try {
     const { content, videoUrl, title, userId } = req.body;
@@ -215,6 +222,7 @@ router.post('/youtube/post', async (req, res) => {
   }
 });
 
+// ─── TWITTER ─────────────────────────────────────────────────────────────────
 router.post('/twitter/post', async (req, res) => {
   try {
     const { content, userId } = req.body;
@@ -288,16 +296,26 @@ router.post('/twitter/post', async (req, res) => {
   }
 });
 
+// ─── FACEBOOK ────────────────────────────────────────────────────────────────
 router.post('/facebook/post', async (req, res) => {
   try {
-    const { content, imageUrl } = req.body;
+    const { content, imageUrl, videoUrl } = req.body;
     const tokens = await getTokens('facebook');
     if (!tokens) return res.status(401).json({ error: 'Facebook not connected' });
+
     const accessToken = tokens.access_token;
-    const extraData   = tokens.extra_data || {};
-    const pageId      = extraData.page_id;
+    const pageId      = tokens.extra_data?.page_id;
     if (!pageId) return res.status(400).json({ error: 'Facebook Page ID not found. Reconnect Facebook.' });
     if (!accessToken) return res.status(401).json({ error: 'Facebook access token missing. Reconnect Facebook.' });
+
+    if (videoUrl) {
+      const videoRes = await axios.post(
+        `https://graph.facebook.com/v18.0/${pageId}/videos`,
+        { file_url: videoUrl, description: content, access_token: accessToken }
+      );
+      return res.json({ success: true, postId: videoRes.data.id, platform: 'facebook' });
+    }
+
     const postPayload = { message: content, access_token: accessToken };
     if (imageUrl) postPayload.link = imageUrl;
     const postRes = await axios.post(`https://graph.facebook.com/v18.0/${pageId}/feed`, postPayload);
@@ -305,6 +323,43 @@ router.post('/facebook/post', async (req, res) => {
   } catch (err) {
     console.error('Facebook post error:', err.response?.data || err.message);
     res.status(500).json({ error: err.response?.data?.error?.message || err.message });
+  }
+});
+
+// ─── LINKEDIN ────────────────────────────────────────────────────────────────
+router.post('/linkedin/post', async (req, res) => {
+  try {
+    const { content, imageUrl, userId } = req.body;
+    const resolvedUserId = userId || 1;
+    const tokens = await getTokens('linkedin', resolvedUserId);
+    if (!tokens) return res.status(401).json({ error: 'LinkedIn not connected' });
+
+    const accessToken = tokens.access_token;
+    const accountId   = tokens.extra_data?.account_id;
+    if (!accountId) return res.status(400).json({ error: 'LinkedIn account ID not found. Reconnect LinkedIn.' });
+
+    const postBody = {
+      author: `urn:li:person:${accountId}`,
+      lifecycleState: 'PUBLISHED',
+      specificContent: {
+        'com.linkedin.ugc.ShareContent': {
+          shareCommentary: { text: content },
+          shareMediaCategory: 'NONE'
+        }
+      },
+      visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' }
+    };
+
+    const postRes = await axios.post(
+      'https://api.linkedin.com/v2/ugcPosts',
+      postBody,
+      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'X-Restli-Protocol-Version': '2.0.0' } }
+    );
+
+    res.json({ success: true, postId: postRes.data.id, platform: 'linkedin' });
+  } catch (err) {
+    console.error('LinkedIn post error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.response?.data?.message || err.message });
   }
 });
 
