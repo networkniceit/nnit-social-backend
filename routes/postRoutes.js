@@ -103,7 +103,6 @@ router.post('/instagram/post', async (req, res) => {
     if (!creationId) return res.status(500).json({ error: 'Failed to create Instagram media container' });
 
     if (isVideo) {
-      // Poll status for video/reels
       let status = 'IN_PROGRESS';
       let attempts = 0;
       while (status !== 'FINISHED' && attempts < 60) {
@@ -118,7 +117,6 @@ router.post('/instagram/post', async (req, res) => {
       }
       if (status !== 'FINISHED') throw new Error('Instagram media processing timed out');
     } else {
-      // Image posts just need a short delay
       await new Promise(resolve => setTimeout(resolve, 5000));
     }
 
@@ -146,6 +144,14 @@ router.post('/tiktok/post', async (req, res) => {
 
     const accessToken = tokens.access_token;
 
+    console.log('TikTok: downloading video from', videoUrl);
+    const videoRes = await axios.get(videoUrl, { responseType: 'arraybuffer' });
+    const videoBuffer = Buffer.from(videoRes.data);
+    const videoSize = videoBuffer.length;
+    const chunkSize = 10 * 1024 * 1024;
+    const totalChunks = Math.ceil(videoSize / chunkSize);
+    console.log(`TikTok: video size=${videoSize}, chunks=${totalChunks}`);
+
     const initRes = await axios.post(
       'https://open.tiktokapis.com/v2/post/publish/video/init/',
       {
@@ -157,14 +163,39 @@ router.post('/tiktok/post', async (req, res) => {
           disable_stitch:  false,
         },
         source_info: {
-          source:    'PULL_FROM_URL',
-          video_url: videoUrl,
+          source:            'FILE_UPLOAD',
+          video_size:        videoSize,
+          chunk_size:        chunkSize,
+          total_chunk_count: totalChunks,
         },
       },
       { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' } }
     );
 
     const publishId = initRes.data?.data?.publish_id;
+    const uploadUrl = initRes.data?.data?.upload_url;
+    console.log('TikTok: init done, publishId=', publishId, 'uploadUrl=', uploadUrl);
+
+    if (!uploadUrl) throw new Error('TikTok did not return an upload URL');
+
+    for (let i = 0; i < totalChunks; i++) {
+      const start = i * chunkSize;
+      const end   = Math.min(start + chunkSize, videoSize);
+      const chunk = videoBuffer.slice(start, end);
+      const contentRange = `bytes ${start}-${end - 1}/${videoSize}`;
+      console.log(`TikTok: uploading chunk ${i + 1}/${totalChunks}, range=${contentRange}`);
+      await axios.put(uploadUrl, chunk, {
+        headers: {
+          'Content-Type':   'video/mp4',
+          'Content-Range':  contentRange,
+          'Content-Length': chunk.length,
+        },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+    }
+
+    console.log('TikTok: all chunks uploaded, publishId=', publishId);
     res.json({ success: true, publishId, platform: 'tiktok' });
   } catch (err) {
     console.error('TikTok post error:', err.response?.data || err.message);
