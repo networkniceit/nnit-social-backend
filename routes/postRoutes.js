@@ -99,7 +99,7 @@ router.post('/instagram/post', async (req, res) => {
     const creationId = containerRes.data.id;
     if (!creationId) return res.status(500).json({ error: 'Failed to create Instagram media container' });
 
-    await new Promise(resolve => setTimeout(resolve, 5000));
+   await new Promise(resolve => setTimeout(resolve, 10000));
 
     const publishRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
