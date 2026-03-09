@@ -79,6 +79,7 @@ router.post('/instagram/post', async (req, res) => {
     );
     const creationId = containerRes.data.id;
     if (!creationId) return res.status(500).json({ error: 'Failed to create Instagram media container' });
+    await new Promise(resolve => setTimeout(resolve, 3000));
     const publishRes = await axios.post(
       `https://graph.facebook.com/v18.0/${igUserId}/media_publish`,
       { creation_id: creationId, access_token: accessToken }
@@ -116,7 +117,7 @@ router.post('/tiktok/post', async (req, res) => {
         source_info: {
           source:            'FILE_UPLOAD',
           video_size:        videoSize,
-          chunk_size: videoSize,
+          chunk_size:        videoSize,
           total_chunk_count: 1,
         },
       },
