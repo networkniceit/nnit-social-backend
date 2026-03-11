@@ -148,8 +148,7 @@ router.post('/tiktok/post', async (req, res) => {
     const videoRes = await axios.get(videoUrl, { responseType: 'arraybuffer' });
     const videoBuffer = Buffer.from(videoRes.data);
     const videoSize = videoBuffer.length;
-    const MAX_CHUNK = 64 * 1024 * 1024; // 64MB max per chunk
-    const chunkSize = Math.min(videoSize, MAX_CHUNK);
+    const chunkSize = 10 * 1024 * 1024; // 10MB chunks
     const totalChunks = Math.ceil(videoSize / chunkSize);
     console.log(`TikTok: video size=${videoSize}, chunkSize=${chunkSize}, chunks=${totalChunks}`);
 
