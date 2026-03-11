@@ -33,10 +33,9 @@ async function getTokens(platform, userId = 1) {
       }
     };
   }
-  if (platform === 'twitter') {
+ if (platform === 'twitter') {
     return {
-      access_token: row.page_access_token || row.access_token,
-      extra_data: {}
+      access_token: row.access_token,
     };
   }
   if (platform === 'tiktok') {
