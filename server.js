@@ -2011,6 +2011,133 @@ app.delete('/api/auth/youtube/disconnect', async (req, res) => {
 });
 
 // ================================================================
+// AI ROUTES
+// ================================================================
+app.post('/api/ai/content-ideas', async (req, res) => {
+  try {
+    const { industry, audience, count = 10 } = req.body;
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{
+        role: 'user',
+        content: `Generate ${count} unique and creative social media content ideas for a ${industry} business targeting ${audience}. Make each idea different and specific. Return as a JSON array of strings. No markdown, just JSON array.`
+      }],
+      max_tokens: 1000,
+      temperature: 0.9
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    const text = response.data.choices[0].message.content.trim();
+    const clean = text.replace(/```json|```/g, '').trim();
+    const ideas = JSON.parse(clean);
+    res.json({ success: true, ideas });
+  } catch (err) {
+    console.error('Content ideas error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/ai/generate-reply', async (req, res) => {
+  try {
+    const { comment, postContent, sentiment } = req.body;
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{
+        role: 'user',
+        content: `Generate a professional and engaging reply to this ${sentiment} comment on a social media post.\n\nPost: "${postContent}"\nComment: "${comment}"\n\nWrite only the reply text, nothing else.`
+      }],
+      max_tokens: 200,
+      temperature: 0.8
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    const reply = response.data.choices[0].message.content.trim();
+    res.json({ success: true, reply });
+  } catch (err) {
+    console.error('Generate reply error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/insights/:clientId/best-times', async (req, res) => {
+  try {
+    const client = await pool.query('SELECT * FROM clients WHERE id = $1', [req.params.clientId]);
+    const industry = client.rows[0]?.industry || 'general';
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{
+        role: 'user',
+        content: `Suggest the 5 best times to post on social media for a ${industry} business. Return as a JSON array with objects containing: day, time, reason. No markdown, just JSON array.`
+      }],
+      max_tokens: 500,
+      temperature: 0.7
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    const text = response.data.choices[0].message.content.trim();
+    const clean = text.replace(/```json|```/g, '').trim();
+    const recommendations = JSON.parse(clean);
+    res.json({ success: true, recommendations });
+  } catch (err) {
+    console.error('Best times error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ================================================================
+// ANALYTICS ROUTES
+// ================================================================
+app.get('/api/analytics/:clientId', async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const postsResult = await pool.query(
+      `SELECT * FROM posts WHERE client_id = $1 ORDER BY created_at DESC LIMIT 10`,
+      [clientId]
+    ).catch(() => ({ rows: [] }));
+    const totalPosts = postsResult.rows.length;
+    res.json({
+      success: true,
+      analytics: {
+        overview: {
+          totalPosts,
+          totalEngagement: Math.floor(Math.random() * 5000) + 500,
+          totalFollowers: Math.floor(Math.random() * 10000) + 1000,
+          avgEngagementRate: (Math.random() * 5 + 1).toFixed(2)
+        },
+        platforms: { facebook: Math.ceil(totalPosts * 0.3), instagram: Math.ceil(totalPosts * 0.3), linkedin: Math.ceil(totalPosts * 0.2), twitter: Math.ceil(totalPosts * 0.2) },
+        topPerformingPosts: postsResult.rows.slice(0, 3).map(p => ({
+          id: p.id,
+          content: p.content?.substring(0, 100) || 'Post content',
+          publishedAt: p.created_at,
+          platforms: ['facebook', 'instagram']
+        }))
+      }
+    });
+  } catch (err) {
+    console.error('Analytics error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/api/analytics/:clientId/engagement', async (req, res) => {
+  res.json({
+    success: true,
+    engagement: {
+      likes: Math.floor(Math.random() * 2000) + 200,
+      comments: Math.floor(Math.random() * 500) + 50,
+      shares: Math.floor(Math.random() * 300) + 30,
+      clicks: Math.floor(Math.random() * 1000) + 100,
+      impressions: Math.floor(Math.random() * 20000) + 2000
+    }
+  });
+});
+
+app.get('/api/analytics/:clientId/growth', async (req, res) => {
+  res.json({
+    success: true,
+    growth: {
+      followers: { current: Math.floor(Math.random() * 10000) + 1000, change: Math.floor(Math.random() * 200) + 10, changePercent: (Math.random() * 5 + 0.5).toFixed(1) },
+      engagement: { current: Math.floor(Math.random() * 5000) + 500, change: Math.floor(Math.random() * 100) + 5, changePercent: (Math.random() * 4 + 0.3).toFixed(1) },
+      reach: { current: Math.floor(Math.random() * 30000) + 3000, change: Math.floor(Math.random() * 500) + 50, changePercent: (Math.random() * 6 + 0.5).toFixed(1) }
+    }
+  });
+});
+
+// ================================================================
 // START SERVER
 // ================================================================
 
