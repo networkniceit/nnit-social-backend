@@ -148,9 +148,10 @@ router.post('/tiktok/post', async (req, res) => {
     const videoRes = await axios.get(videoUrl, { responseType: 'arraybuffer' });
     const videoBuffer = Buffer.from(videoRes.data);
     const videoSize = videoBuffer.length;
-    const chunkSize = 10 * 1024 * 1024;
+    const MIN_CHUNK = 5 * 1024 * 1024; // 5MB minimum
+    const chunkSize = videoSize <= MIN_CHUNK ? videoSize : MIN_CHUNK;
     const totalChunks = Math.ceil(videoSize / chunkSize);
-    console.log(`TikTok: video size=${videoSize}, chunks=${totalChunks}`);
+    console.log(`TikTok: video size=${videoSize}, chunkSize=${chunkSize}, chunks=${totalChunks}`);
 
     const initRes = await axios.post(
       'https://open.tiktokapis.com/v2/post/publish/video/init/',
