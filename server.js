@@ -2331,7 +2331,7 @@ const os = require('os');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const videoStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, os.tmpdir()),
-  filename: (req, file, cb) => cb(null, 'upload_' + Date.now() + path.extname(file.originalname))
+  filename: (req, file, cb) => { const ext = file.originalname.split('.').pop(); cb(null, 'upload_' + Date.now() + '.' + ext); }
 });
 const videoUpload = multer({ storage: videoStorage, limits: { fileSize: 500 * 1024 * 1024 } });
 app.post('/api/media/trim', videoUpload.single('video'), async (req, res) => {
