@@ -2346,10 +2346,10 @@ app.post('/api/media/trim', videoUpload.single('video'), async (req, res) => {
     const outputPath = require('path').join(os.tmpdir(), 'trimmed_' + Date.now() + '.mp4');
     await new Promise((resolve, reject) => {
       let cmd = ffmpeg(inputPath).setStartTime(start).setDuration(duration).outputOptions(['-c:v libx264', '-c:a aac', '-movflags +faststart']);
-      if (caption && caption.trim()) {
+      // caption: if (caption && caption.trim()) {
         const pos = captionPosition || 'bottom';
         const y = pos === 'top' ? '10' : pos === 'center' ? '(h-text_h)/2' : 'h-th-20';
-        cmd = cmd.videoFilters(['drawtext=text=' + caption.replace(/'/g, "\'") + ':fontsize=36:fontcolor=white:box=1:boxcolor=black@0.5:boxborderw=8:x=(w-text_w)/2:y=' + y]);
+        // caption skipped
       }
       cmd.save(outputPath).on('end', resolve).on('error', reject);
     });
@@ -2387,5 +2387,6 @@ ensureSocialAccountsTable()
   });
 
 module.exports = app;
+
 
 
