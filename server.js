@@ -1372,69 +1372,38 @@ Format: #hashtag1 #hashtag2 #hashtag3`;
 
 app.post('/api/ai/generate-reply', async (req, res) => {
   try {
-    const { comment, postContent, sentiment, clientId } = req.body;
-    const client = clients.get(clientId);
-    const brandVoice = client?.brandVoice || 'professional and friendly';
-
+    const { comment = '', postContent = '', sentiment = 'neutral' } = req.body;
     const sentimentContext =
       sentiment === 'negative'
         ? 'This is a negative comment, respond with empathy and try to resolve their concern.'
         : sentiment === 'positive'
         ? 'This is a positive comment, respond with gratitude and enthusiasm.'
         : 'This is a neutral comment, respond helpfully and engage them.';
-
-    const prompt = `You are a social media manager responding to a comment.
-
-Original post: "${postContent}"
-Comment: "${comment}"
-
-${sentimentContext}
-
-Brand voice: ${brandVoice}
-
-Generate a helpful, genuine reply (max 50 words). Be conversational, not corporate.`;
-
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.7,
-      max_tokens: 100
-    });
-
-    res.json({ success: true, reply: completion.choices[0].message.content.trim() });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const r = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: `You are a social media manager. Original post: "${postContent}" Comment: "${comment}" ${sentimentContext} Write a genuine reply (max 50 words). Be conversational, not corporate. Reply text only, nothing else.` }],
+      max_tokens: 200, temperature: 0.8
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    res.json({ success: true, reply: r.data.choices[0].message.content.trim() });
+  } catch (err) {
+    console.error('generate-reply error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
 app.post('/api/ai/content-ideas', async (req, res) => {
   try {
-    const { industry, audience, count, clientId } = req.body;
-    const client = clients.get(clientId);
-    const brandVoice = client?.brandVoice || 'engaging';
-
-    const prompt = `Generate ${count || 10} creative social media post ideas for:
-
-Industry: ${industry}
-Target audience: ${audience}
-Brand voice: ${brandVoice}
-
-Make them diverse (questions, tips, behind-the-scenes, testimonials, etc.)
-
-Return as JSON: {"ideas": ["idea1", "idea2", ...]}`;
-
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.9,
-      max_tokens: 400,
-      response_format: { type: 'json_object' }
-    });
-
-    const result = JSON.parse(completion.choices[0].message.content);
-    res.json({ success: true, ideas: result.ideas || [] });
-  } catch (error) {
-    res.status(500).json({ error: error.message });
+    const { industry = 'general', audience = 'general audience', count = 10 } = req.body;
+    const r = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: `Generate ${count} unique social media content ideas for a ${industry} business targeting ${audience}. Vary between tips, questions, stories, promotions. Return ONLY a JSON array of strings, no markdown, no explanation.` }],
+      max_tokens: 1000, temperature: 0.95
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    const text = r.data.choices[0].message.content.trim().replace(/```json|```/g, '').trim();
+    res.json({ success: true, ideas: JSON.parse(text) });
+  } catch (err) {
+    console.error('content-ideas error:', err.response?.data || err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
