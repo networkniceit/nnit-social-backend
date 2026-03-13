@@ -2358,7 +2358,7 @@ app.post('/api/media/trim', videoUpload.single('video'), async (req, res) => {
     const stream = fs.createReadStream(outputPath);
     stream.pipe(res);
     stream.on('end', () => { fs.unlink(inputPath, () => {}); fs.unlink(outputPath, () => {}); });
-  } catch (err) { res.status(500).json({ error: 'Video processing failed: ' + err.message }); }
+  } catch (err) { console.error('TRIM ERROR:', err.message, err.stack); res.status(500).json({ error: 'Video processing failed: ' + err.message }); }
 });
 app.post('/api/media/info', videoUpload.single('video'), (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No video uploaded' });
