@@ -2346,11 +2346,11 @@ app.post('/api/media/trim', videoUpload.single('video'), async (req, res) => {
     const outputPath = require('path').join(os.tmpdir(), 'trimmed_' + Date.now() + '.mp4');
     await new Promise((resolve, reject) => {
       let cmd = ffmpeg(inputPath).setStartTime(start).setDuration(duration).outputOptions(['-c:v libx264', '-c:a aac', '-movflags +faststart']);
-      // caption: if (caption && caption.trim()) {
-        const pos = captionPosition || 'bottom';
-        const y = pos === 'top' ? '10' : pos === 'center' ? '(h-text_h)/2' : 'h-th-20';
-        // caption skipped
-      }
+      // caption overlay skipped
+
+
+
+
       cmd.save(outputPath).on('end', resolve).on('error', reject);
     });
     res.setHeader('Content-Type', 'video/mp4');
