@@ -2322,12 +2322,12 @@ app.delete('/api/clients/:id', async (req, res) => {
 
 
 // ================================================================
-// MEDIA / VIDEO PROCESSING ROUTES (FFmpeg)
-// ================================================================
 const ffmpeg = require('fluent-ffmpeg');
 const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
 const multer = require('multer');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 ffmpeg.setFfmpegPath(ffmpegInstaller.path);
 const videoStorage = multer.diskStorage({
   destination: (req, file, cb) => cb(null, os.tmpdir()),
