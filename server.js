@@ -2387,7 +2387,7 @@ app.post('/api/media/merge-audio', videoUpload.fields([{ name: 'video', maxCount
           .complexFilter(['[1:a]volume=' + volume + '[music]','[0:a][music]amix=inputs=2:duration=first[aout]'])
           .outputOptions(['-map 0:v', '-map [aout]', '-c:v copy', '-c:a aac', '-movflags +faststart']);
       } else {
-        cmd = ffmpeg(videoPath).input(audioPath)
+        cmd = ffmpeg(videoPath).input(audioPath).inputOptions(['-f webm'])
           .outputOptions(['-map 0:v', '-map 1:a', '-c:v copy', '-c:a aac', '-shortest', '-movflags +faststart']);
       }
       cmd.save(outputPath).on('end', resolve).on('error', reject);
