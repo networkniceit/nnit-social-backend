@@ -2387,7 +2387,7 @@ app.post('/api/media/merge-audio', videoUpload.fields([{ name: 'video', maxCount
           .complexFilter(['[1:a]volume=' + volume + '[music]','[0:a][music]amix=inputs=2:duration=first[aout]'])
           .outputOptions(['-map 0:v', '-map [aout]', '-c:v copy', '-c:a aac', '-movflags +faststart']);
       } else {
-        cmd = ffmpeg(videoPath).input(audioPath).inputOptions(['-f webm'])
+        cmd = ffmpeg(videoPath).input(audioPath)
           .outputOptions(['-map 0:v', '-map 1:a', '-c:v copy', '-c:a aac', '-shortest', '-movflags +faststart']);
       }
       cmd.save(outputPath).on('end', resolve).on('error', reject);
@@ -2403,6 +2403,30 @@ app.post('/api/media/merge-audio', videoUpload.fields([{ name: 'video', maxCount
   }
 });
 
+app.post('/api/media/tts-merge', videoUpload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No video uploaded' });
+    const { text, lang } = req.body;
+    if (!text) return res.status(400).json({ error: 'No text provided' });
+    const gtts = require('node-gtts')(lang || 'en');
+    const audioPath = require('path').join(os.tmpdir(), 'tts_' + Date.now() + '.mp3');
+    const outputPath = require('path').join(os.tmpdir(), 'tts_merged_' + Date.now() + '.mp4');
+    await new Promise((resolve, reject) => gtts.save(audioPath, text, (err) => err ? reject(err) : resolve()));
+    await new Promise((resolve, reject) => {
+      ffmpeg(req.file.path).input(audioPath)
+        .outputOptions(['-map 0:v', '-map 1:a', '-c:v copy', '-c:a aac', '-shortest', '-movflags +faststart'])
+        .save(outputPath).on('end', resolve).on('error', reject);
+    });
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'attachment; filename="nnit-voiceover.mp4"');
+    const stream = fs.createReadStream(outputPath);
+    stream.pipe(res);
+    stream.on('end', () => { fs.unlink(req.file.path, () => {}); fs.unlink(audioPath, () => {}); fs.unlink(outputPath, () => {}); });
+  } catch (err) {
+    console.error('TTS MERGE ERROR:', err.message);
+    res.status(500).json({ error: 'TTS merge failed: ' + err.message });
+  }
+});
 // START SERVER
 // ================================================================
 
