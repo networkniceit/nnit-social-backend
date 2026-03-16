@@ -2320,6 +2320,7 @@ app.delete('/api/clients/:id', async (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+app.options('/api/media/*', (req, res) => { res.setHeader('Access-Control-Allow-Origin', '*'); res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS'); res.setHeader('Access-Control-Allow-Headers', 'Content-Type'); res.sendStatus(200); });
 
 // ================================================================
 const ffmpeg = require('fluent-ffmpeg');
