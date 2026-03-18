@@ -2071,3 +2071,167 @@ app.get('/api/analytics/:clientId/growth', async (req, res) => {
 
 // ================================================================
 // AI ROUTES
+
+app.post('/api/ai/content-ideas', async (req, res) => {
+  try {
+    const { industry, audience, count = 10 } = req.body;
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: `Generate ${count} unique and creative social media content ideas for a ${industry} business targeting ${audience}. Make each idea different - vary between tips, questions, stories, promotions, behind-the-scenes. Return ONLY a JSON array of strings, no markdown.` }],
+      max_tokens: 1000, temperature: 0.95
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    const text = response.data.choices[0].message.content.trim().replace(/```json|```/g, '').trim();
+    res.json({ success: true, ideas: JSON.parse(text) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/ai/generate-reply', async (req, res) => {
+  try {
+    const { comment, postContent, sentiment } = req.body;
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: `Write a professional reply to this ${sentiment} comment.\nPost: "${postContent}"\nComment: "${comment}"\nReply only with the reply text, nothing else.` }],
+      max_tokens: 200, temperature: 0.8
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    res.json({ success: true, reply: response.data.choices[0].message.content.trim() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/insights/:clientId/best-times', async (req, res) => {
+  try {
+    const clientRow = await pool.query('SELECT * FROM clients WHERE id = $1', [req.params.clientId]);
+    const industry = clientRow.rows[0]?.industry || 'general';
+    const response = await axios.post('https://api.groq.com/openai/v1/chat/completions', {
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: `Suggest 5 best times to post on social media for a ${industry} business. Return ONLY a JSON array with objects: day, time, reason. No markdown.` }],
+      max_tokens: 500, temperature: 0.7
+    }, { headers: { Authorization: `Bearer ${process.env.GROQ_API_KEY}`, 'Content-Type': 'application/json' } });
+    const text = response.data.choices[0].message.content.trim().replace(/```json|```/g, '').trim();
+    res.json({ success: true, recommendations: JSON.parse(text) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.put('/api/clients/:id', async (req, res) => {
+  try {
+    const { name, email, phone, industry, website, notes } = req.body;
+    const result = await pool.query(
+      'UPDATE clients SET name=$1, email=$2, phone=$3, industry=$4, website=$5, notes=$6, updated_at=NOW() WHERE id=$7 RETURNING *',
+      [name, email, phone||null, industry||null, website||null, notes||null, req.params.id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Client not found' });
+    res.json({ success: true, client: result.rows[0] });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/clients/:id', async (req, res) => {
+  try {
+    await pool.query('DELETE FROM clients WHERE id=$1', [req.params.id]);
+    res.json({ success: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+const ffmpeg = require('fluent-ffmpeg');
+const ffmpegInstaller = require('@ffmpeg-installer/ffmpeg');
+const multer = require('multer');
+const os = require('os');
+const fs = require('fs');
+const path = require('path');
+ffmpeg.setFfmpegPath(ffmpegInstaller.path);
+const videoStorage = multer.diskStorage({
+  destination: (req, file, cb) => cb(null, os.tmpdir()),
+  filename: (req, file, cb) => { const ext = file.originalname.split('.').pop(); cb(null, 'upload_' + Date.now() + '.' + ext); }
+});
+const videoUpload = multer({ storage: videoStorage, limits: { fileSize: 500 * 1024 * 1024 } });
+
+app.post('/api/media/trim', videoUpload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No video file uploaded' });
+    const { startTime, endTime } = req.body;
+    const start = parseFloat(startTime) || 0;
+    const end = parseFloat(endTime) || 10;
+    const duration = end - start;
+    if (duration <= 0) return res.status(400).json({ error: 'Invalid trim times' });
+    const inputPath = req.file.path;
+    const outputPath = require('path').join(os.tmpdir(), 'trimmed_' + Date.now() + '.mp4');
+    await new Promise((resolve, reject) => {
+      ffmpeg(inputPath).setStartTime(start).setDuration(duration)
+        .outputOptions(['-c:v libx264', '-c:a aac', '-movflags +faststart'])
+        .save(outputPath).on('end', resolve).on('error', reject);
+    });
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'attachment; filename="nnit-trimmed.mp4"');
+    const stream = fs.createReadStream(outputPath);
+    stream.pipe(res);
+    stream.on('end', () => { fs.unlink(inputPath, () => {}); fs.unlink(outputPath, () => {}); });
+  } catch (err) { res.status(500).json({ error: 'Video processing failed: ' + err.message }); }
+});
+
+app.post('/api/media/info', videoUpload.single('video'), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No video uploaded' });
+  ffmpeg.ffprobe(req.file.path, (err, metadata) => {
+    fs.unlink(req.file.path, () => {});
+    if (err) return res.status(500).json({ error: err.message });
+    const stream = metadata.streams.find(s => s.codec_type === 'video');
+    res.json({ duration: metadata.format.duration, size: metadata.format.size, width: stream ? stream.width : null, height: stream ? stream.height : null, codec: stream ? stream.codec_name : null });
+  });
+});
+
+app.post('/api/media/merge-audio', videoUpload.fields([{ name: 'video', maxCount: 1 }, { name: 'audio', maxCount: 1 }]), async (req, res) => {
+  try {
+    if (!req.files || !req.files.video) return res.status(400).json({ error: 'No video file uploaded' });
+    if (!req.files.audio) return res.status(400).json({ error: 'No audio file uploaded' });
+    const videoPath = req.files.video[0].path;
+    const audioPath = req.files.audio[0].path;
+    const audioType = req.body.audioType || 'voiceover';
+    const volume = parseFloat(req.body.volume || 100) / 100;
+    const outputPath = require('path').join(os.tmpdir(), 'merged_' + Date.now() + '.mp4');
+    await new Promise((resolve, reject) => {
+      let cmd;
+      if (audioType === 'music') {
+        cmd = ffmpeg(videoPath).input(audioPath)
+          .complexFilter(['[1:a]volume=' + volume + '[music]', '[0:a][music]amix=inputs=2:duration=first[aout]'])
+          .outputOptions(['-map 0:v', '-map [aout]', '-c:v copy', '-c:a aac', '-movflags +faststart']);
+      } else {
+        cmd = ffmpeg(videoPath).input(audioPath)
+          .outputOptions(['-map 0:v', '-map 1:a', '-c:v copy', '-c:a aac', '-shortest', '-movflags +faststart']);
+      }
+      cmd.save(outputPath).on('end', resolve).on('error', reject);
+    });
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'attachment; filename="nnit-with-audio.mp4"');
+    const stream = fs.createReadStream(outputPath);
+    stream.pipe(res);
+    stream.on('end', () => { fs.unlink(videoPath, () => {}); fs.unlink(audioPath, () => {}); fs.unlink(outputPath, () => {}); });
+  } catch (err) { res.status(500).json({ error: 'Audio merge failed: ' + err.message }); }
+});
+
+app.post('/api/media/tts-merge', videoUpload.single('video'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'No video uploaded' });
+    const { text, lang } = req.body;
+    if (!text) return res.status(400).json({ error: 'No text provided' });
+    const gtts = require('node-gtts')(lang || 'en');
+    const audioPath = require('path').join(os.tmpdir(), 'tts_' + Date.now() + '.mp3');
+    const outputPath = require('path').join(os.tmpdir(), 'tts_merged_' + Date.now() + '.mp4');
+    await new Promise((resolve, reject) => gtts.save(audioPath, text, (err) => err ? reject(err) : resolve()));
+    await new Promise((resolve, reject) => {
+      ffmpeg(req.file.path).input(audioPath)
+        .outputOptions(['-map 0:v', '-map 1:a', '-c:v copy', '-c:a aac', '-shortest', '-movflags +faststart'])
+        .save(outputPath).on('end', resolve).on('error', reject);
+    });
+    res.setHeader('Content-Type', 'video/mp4');
+    res.setHeader('Content-Disposition', 'attachment; filename="nnit-voiceover.mp4"');
+    const stream = fs.createReadStream(outputPath);
+    stream.pipe(res);
+    stream.on('end', () => { fs.unlink(req.file.path, () => {}); fs.unlink(audioPath, () => {}); fs.unlink(outputPath, () => {}); });
+  } catch (err) { res.status(500).json({ error: 'TTS merge failed: ' + err.message }); }
+});
+
+const PORT = process.env.PORT || 4000;
+ensureSocialAccountsTable()
+  .then(() => {
+    app.listen(PORT, () => { console.log(`API Server running on port ${PORT}`); });
+  })
+  .catch(err => { console.error('Failed to initialize DB tables:', err.message); process.exit(1); });
+
+module.exports = app;
