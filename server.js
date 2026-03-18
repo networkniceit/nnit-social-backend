@@ -2235,3 +2235,77 @@ ensureSocialAccountsTable()
   .catch(err => { console.error('Failed to initialize DB tables:', err.message); process.exit(1); });
 
 module.exports = app;
+
+// ================================================================
+// POST SCHEDULER - runs every 60 seconds
+// ================================================================
+
+const publishToFacebook = async (post, account) => {
+  const token = account.page_access_token || account.access_token;
+  const pageId = account.page_id || account.account_id;
+  if (!token || !pageId) throw new Error('Facebook: missing page token or page ID');
+  const r = await axios.post(`https://graph.facebook.com/v18.0/${pageId}/feed`, { message: post.content, access_token: token });
+  return { platform: 'facebook', success: true, post_id: r.data.id };
+};
+
+const publishToInstagram = async (post, account) => {
+  const token = account.access_token;
+  const igId = account.instagram_account_id;
+  if (!token || !igId) throw new Error('Instagram: missing token or account ID');
+  const mediaRes = await axios.post(`https://graph.facebook.com/v18.0/${igId}/media`, { caption: post.content, media_type: 'TEXT', access_token: token });
+  const publishRes = await axios.post(`https://graph.facebook.com/v18.0/${igId}/media_publish`, { creation_id: mediaRes.data.id, access_token: token });
+  return { platform: 'instagram', success: true, post_id: publishRes.data.id };
+};
+
+const publishToLinkedin = async (post, account) => {
+  const token = account.access_token;
+  const urn = account.account_id;
+  if (!token || !urn) throw new Error('LinkedIn: missing token or URN');
+  const r = await axios.post('https://api.linkedin.com/v2/ugcPosts', { author: `urn:li:person:${urn}`, lifecycleState: 'PUBLISHED', specificContent: { 'com.linkedin.ugc.ShareContent': { shareCommentary: { text: post.content }, shareMediaCategory: 'NONE' } }, visibility: { 'com.linkedin.ugc.MemberNetworkVisibility': 'PUBLIC' } }, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'X-Restli-Protocol-Version': '2.0.0' } });
+  return { platform: 'linkedin', success: true, post_id: r.data.id };
+};
+
+const publishToTiktok = async (post, account) => {
+  return { platform: 'tiktok', success: false, skipped: true, reason: 'TikTok requires video content' };
+};
+
+const publishToYoutube = async (post, account) => {
+  return { platform: 'youtube', success: false, skipped: true, reason: 'YouTube requires video content' };
+};
+
+const publishToTwitter = async (post, account) => {
+  return { platform: 'twitter', success: false, skipped: true, reason: 'Twitter requires paid API subscription' };
+};
+
+const platformPublishers = { facebook: publishToFacebook, instagram: publishToInstagram, linkedin: publishToLinkedin, tiktok: publishToTiktok, youtube: publishToYoutube, twitter: publishToTwitter };
+
+const runScheduler = async () => {
+  try {
+    const now = new Date().toISOString();
+    const due = await pool.query(`SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_time <= $1`, [now]);
+    if (due.rows.length === 0) return;
+    console.log(`[Scheduler] Found ${due.rows.length} post(s) due`);
+    for (const post of due.rows) {
+      const results = {};
+      const platforms = Array.isArray(post.platforms) ? post.platforms : JSON.parse(post.platforms || '[]');
+      for (const platform of platforms) {
+        try {
+          const accountRes = await pool.query(`SELECT * FROM social_accounts WHERE client_id = $1 AND platform = $2 LIMIT 1`, [post.client_id, platform]);
+          const account = accountRes.rows[0];
+          if (!account) { results[platform] = { success: false, error: `No connected ${platform} account` }; continue; }
+          results[platform] = await platformPublishers[platform](post, account);
+        } catch (err) {
+          results[platform] = { success: false, error: err.message };
+        }
+      }
+      const allFailed = Object.values(results).every(r => !r.success && !r.skipped);
+      await pool.query(`UPDATE posts SET status = $1, results = $2, published_at = $3 WHERE id = $4`, [allFailed ? 'failed' : 'published', JSON.stringify(results), new Date().toISOString(), post.id]);
+      console.log(`[Scheduler] Post ${post.id} processed`);
+    }
+  } catch (err) {
+    console.error('[Scheduler] Error:', err.message);
+  }
+};
+
+setInterval(runScheduler, 60 * 1000);
+console.log('[Scheduler] Started - checking every 60 seconds');
