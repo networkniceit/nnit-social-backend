@@ -222,15 +222,15 @@ app.post('/api/clients/:clientId/connect/tiktok', (req, res) => {
   res.json({ success: true, message: 'TikTok connected' });
 });
 
-app.get('/api/clients/:clientId/platforms', (req, res) => {
-  const client = clients.get(req.params.clientId);
-  if (!client) return res.status(404).json({ error: 'Client not found' });
-  const platforms = Object.keys(client.socialAccounts || {}).map(platform => ({
-    name: platform,
-    connected: client.socialAccounts[platform].connected,
-    connectedAt: client.socialAccounts[platform].connectedAt
-  }));
-  res.json({ success: true, platforms });
+app.get('/api/clients/:clientId/platforms', async (req, res) => {
+  try {
+    const c = await pool.query('SELECT id FROM clients WHERE id = $1', [req.params.clientId]);
+    if (c.rows.length === 0) return res.status(404).json({ error: 'Client not found' });
+    const r = await pool.query('SELECT platform, updated_at FROM social_accounts ORDER BY platform');
+    res.json({ success: true, platforms: r.rows.map(x => ({ name: x.platform, connected: true, connectedAt: x.updated_at })) });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
 });
 
 // ================================================================
@@ -1758,24 +1758,27 @@ app.get('/api/export/:clientId/posts', (req, res) => {
 // DASHBOARD STATS
 // ================================================================
 
-app.get('/api/dashboard/stats', (req, res) => {
+app.get('/api/dashboard/stats', async (req, res) => {
   const stats = {
-    totalClients: clients.size,
-    activeClients: Array.from(clients.values()).filter(c => c.status === 'active').length,
-    totalScheduledPosts: scheduledPosts.length,
-    totalPublishedPosts: publishedPosts.length,
-    totalAutoReplies: autoReplies.length,
-    platformsConnected: { facebook: 0, instagram: 0, twitter: 0, linkedin: 0, tiktok: 0 }
+    totalClients: 0, activeClients: 0, totalScheduledPosts: 0, totalPublishedPosts: 0, totalAutoReplies: autoReplies.length,
+    platformsConnected: { facebook: 0, instagram: 0, twitter: 0, linkedin: 0, tiktok: 0, youtube: 0 }
   };
-
-  clients.forEach(client => {
-    Object.keys(client.socialAccounts || {}).forEach(platform => {
-      if (client.socialAccounts[platform]?.connected) {
-        stats.platformsConnected[platform] = (stats.platformsConnected[platform] || 0) + 1;
-      }
+  try {
+    const c = await pool.query('SELECT COUNT(*)::int AS n FROM clients');
+    stats.totalClients = c.rows[0].n;
+    stats.activeClients = c.rows[0].n;
+  } catch (e) {}
+  try {
+    const p = await pool.query("SELECT status, COUNT(*)::int AS n FROM posts GROUP BY status");
+    p.rows.forEach(r => {
+      if (r.status === 'scheduled') stats.totalScheduledPosts = r.n;
+      if (r.status === 'published') stats.totalPublishedPosts = r.n;
     });
-  });
-
+  } catch (e) {}
+  try {
+    const a = await pool.query('SELECT platform, COUNT(*)::int AS n FROM social_accounts GROUP BY platform');
+    a.rows.forEach(r => { stats.platformsConnected[r.platform] = r.n; });
+  } catch (e) {}
   res.json({ success: true, stats });
 });
 
