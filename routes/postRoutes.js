@@ -147,8 +147,10 @@ router.post('/tiktok/post', async (req, res) => {
     const videoRes = await axios.get(videoUrl, { responseType: 'arraybuffer' });
     const videoBuffer = Buffer.from(videoRes.data);
     const videoSize = videoBuffer.length;
-    const chunkSize = 20 * 1024 * 1024; // 20MB clean chunks
-    const totalChunks = Math.ceil(videoSize / chunkSize);
+    // TikTok rule: video up to 64MB is ONE chunk, chunk_size equals video size.
+    const MAX_SINGLE = 64 * 1024 * 1024;
+    const chunkSize = videoSize <= MAX_SINGLE ? videoSize : 20 * 1024 * 1024;
+    const totalChunks = videoSize <= MAX_SINGLE ? 1 : Math.floor(videoSize / chunkSize);
     console.log(`TikTok: video size=${videoSize}, chunkSize=${chunkSize}, chunks=${totalChunks}`);
 
     const initRes = await axios.post(
@@ -179,7 +181,7 @@ router.post('/tiktok/post', async (req, res) => {
 
     for (let i = 0; i < totalChunks; i++) {
       const start = i * chunkSize;
-      const end   = Math.min(start + chunkSize, videoSize);
+      const end   = (i === totalChunks - 1) ? videoSize : start + chunkSize;
       const chunk = videoBuffer.slice(start, end);
       const contentRange = `bytes ${start}-${end - 1}/${videoSize}`;
       console.log(`TikTok: uploading chunk ${i + 1}/${totalChunks}, range=${contentRange}`);
