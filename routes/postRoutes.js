@@ -158,7 +158,7 @@ router.post('/tiktok/post', async (req, res) => {
       {
         post_info: {
           title:           content.substring(0, 150),
-          privacy_level:   'PUBLIC_TO_EVERYONE',
+          privacy_level:   process.env.TIKTOK_PRIVACY || 'SELF_ONLY', // unaudited TikTok apps may only post private; set TIKTOK_PRIVACY=PUBLIC_TO_EVERYONE after audit,
           disable_duet:    false,
           disable_comment: false,
           disable_stitch:  false,
