@@ -238,7 +238,8 @@ router.post('/youtube/post', async (req, res) => {
     };
 
     const doUpload = async (token) => {
-      return await axios.post(
+      // Step 1: start a resumable upload session
+      const init = await axios.post(
         'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status',
         {
           snippet: {
@@ -248,8 +249,17 @@ router.post('/youtube/post', async (req, res) => {
           },
           status: { privacyStatus: 'public' }
         },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json; charset=UTF-8', 'X-Upload-Content-Type': 'video/mp4' } }
       );
+      const sessionUrl = init.headers.location;
+      if (!sessionUrl) throw new Error('YouTube did not return an upload session URL');
+      // Step 2: send the actual video bytes (this step was missing before)
+      const videoRes = await axios.get(videoUrl, { responseType: 'arraybuffer' });
+      const videoBuffer = Buffer.from(videoRes.data);
+      return await axios.put(sessionUrl, videoBuffer, {
+        headers: { 'Content-Type': 'video/mp4', 'Content-Length': videoBuffer.length },
+        maxBodyLength: Infinity, maxContentLength: Infinity
+      });
     };
 
     try {
