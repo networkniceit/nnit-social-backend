@@ -2293,7 +2293,7 @@ const runScheduler = async () => {
       const platforms = Array.isArray(post.platforms) ? post.platforms : JSON.parse(post.platforms || '[]');
       for (const platform of platforms) {
         try {
-          const accountRes = await pool.query(`SELECT * FROM social_accounts WHERE client_id = $1 AND platform = $2 LIMIT 1`, [post.client_id, platform]);
+          const accountRes = await pool.query(`SELECT * FROM social_accounts WHERE platform = $1 ORDER BY updated_at DESC NULLS LAST, id DESC LIMIT 1`, [platform]);
           const account = accountRes.rows[0];
           if (!account) { results[platform] = { success: false, error: `No connected ${platform} account` }; continue; }
           results[platform] = await platformPublishers[platform](post, account);
