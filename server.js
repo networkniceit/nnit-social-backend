@@ -5,6 +5,7 @@ const cron = require('node-cron');
 const { OpenAI } = require('openai');
 const Groq = require('groq-sdk');
 const axios = require('axios');
+const deliveryStatus = require('./delivery-status');
 const { Pool } = require('pg');
 const postRoutes = require('./routes/postRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
@@ -1515,7 +1516,7 @@ app.post('/api/posts/:postId/publish', async (req, res) => {
     if (postResult.rows.length === 0) return res.status(404).json({ error: 'Post not found' });
 
     const post = postResult.rows[0];
-    const platforms = JSON.parse(post.platforms || '[]');
+    const platforms = Array.isArray(post.platforms) ? post.platforms : JSON.parse(post.platforms || '[]');
     const content = post.content;
     const results = {};
 
@@ -1562,12 +1563,13 @@ app.post('/api/posts/:postId/publish', async (req, res) => {
       }
     }
 
+    const delivery = deliveryStatus(results);
     await pool.query(
-      `UPDATE posts SET status='published', published_at=NOW(), results=$1 WHERE id=$2`,
-      [JSON.stringify(results), req.params.postId]
+      `UPDATE posts SET status=$1, published_at=$2, results=$3 WHERE id=$4`,
+      [delivery.status, delivery.delivered ? new Date().toISOString() : null, JSON.stringify(results), req.params.postId]
     );
 
-    res.json({ success: true, results });
+    res.json({ success: delivery.success, status: delivery.status, results });
   } catch (error) {
     console.error('Publish error:', error.message);
     res.status(500).json({ error: error.message });
@@ -1580,58 +1582,24 @@ app.post('/api/posts/:postId/publish', async (req, res) => {
 
 app.get('/api/analytics/:clientId', async (req, res) => {
   try {
-    const pr = await pool.query('SELECT * FROM posts WHERE client_id = $1 ORDER BY created_at DESC LIMIT 10', [req.params.clientId]).catch(() => ({ rows: [] }));
-    const t = pr.rows.length;
-    res.json({
-      success: true,
-      analytics: {
-        overview: {
-          totalPosts: t,
-          totalEngagement: Math.floor(Math.random() * 5000) + 500,
-          totalFollowers: Math.floor(Math.random() * 10000) + 1000,
-          avgEngagementRate: parseFloat((Math.random() * 5 + 1).toFixed(2))
-        },
-        platforms: {
-          facebook: Math.ceil(t * 0.3) || 1,
-          instagram: Math.ceil(t * 0.3) || 1,
-          linkedin: Math.ceil(t * 0.2) || 1,
-          twitter: Math.ceil(t * 0.2) || 1
-        },
-        topPerformingPosts: pr.rows.slice(0, 3).map(p => ({
-          id: p.id,
-          content: (p.content || 'Post').substring(0, 100),
-          publishedAt: p.created_at,
-          platforms: ['facebook', 'instagram']
-        }))
-      }
-    });
+    const pr = await pool.query('SELECT id, content, results, published_at FROM posts WHERE client_id = $1', [req.params.clientId]);
+    res.json({ success: true, analytics: require('./analytics-summary')(pr.rows) });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-app.get('/api/analytics/:clientId/engagement', async (req, res) => {
-  res.json({
-    success: true,
-    engagement: {
-      likes: Math.floor(Math.random() * 2000) + 200,
-      comments: Math.floor(Math.random() * 500) + 50,
-      shares: Math.floor(Math.random() * 300) + 30,
-      clicks: Math.floor(Math.random() * 1000) + 100,
-      impressions: Math.floor(Math.random() * 20000) + 2000
-    }
-  });
+app.get('/api/analytics/:clientId/engagement', (req, res) => {
+  res.json({ success: true, available: false, engagement: {
+    likes: null, comments: null, shares: null, clicks: null, impressions: null
+  } });
 });
 
-app.get('/api/analytics/:clientId/growth', async (req, res) => {
-  res.json({
-    success: true,
-    growth: {
-      followers: { current: Math.floor(Math.random() * 10000) + 1000, change: Math.floor(Math.random() * 200) + 10, changePercent: parseFloat((Math.random() * 5 + 0.5).toFixed(1)) },
-      engagement: { current: Math.floor(Math.random() * 5000) + 500, change: Math.floor(Math.random() * 100) + 5, changePercent: parseFloat((Math.random() * 4 + 0.3).toFixed(1)) },
-      reach: { current: Math.floor(Math.random() * 30000) + 3000, change: Math.floor(Math.random() * 500) + 50, changePercent: parseFloat((Math.random() * 6 + 0.5).toFixed(1)) }
-    }
-  });
+app.get('/api/analytics/:clientId/growth', (req, res) => {
+  const unavailable = { current: null, change: null, changePercent: null };
+  res.json({ success: true, available: false, growth: {
+    followers: unavailable, engagement: unavailable, reach: unavailable
+  } });
 });
 
 // ================================================================
@@ -2282,7 +2250,10 @@ const publishToTwitter = async (post, account) => {
 
 const platformPublishers = { facebook: publishToFacebook, instagram: publishToInstagram, linkedin: publishToLinkedin, tiktok: publishToTiktok, youtube: publishToYoutube, twitter: publishToTwitter };
 
+let schedulerRunning = false;
 const runScheduler = async () => {
+  if (schedulerRunning) return;
+  schedulerRunning = true;
   try {
     const now = new Date().toISOString();
     const due = await pool.query(`SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_time <= $1`, [now]);
@@ -2301,12 +2272,14 @@ const runScheduler = async () => {
           results[platform] = { success: false, error: err.message };
         }
       }
-      const allFailed = Object.values(results).every(r => !r.success && !r.skipped);
-      await pool.query(`UPDATE posts SET status = $1, results = $2, published_at = $3 WHERE id = $4`, [allFailed ? 'failed' : 'published', JSON.stringify(results), new Date().toISOString(), post.id]);
+      const delivery = deliveryStatus(results);
+      await pool.query(`UPDATE posts SET status = $1, results = $2, published_at = $3 WHERE id = $4`, [delivery.status, JSON.stringify(results), delivery.delivered ? new Date().toISOString() : null, post.id]);
       console.log(`[Scheduler] Post ${post.id} processed`);
     }
   } catch (err) {
     console.error('[Scheduler] Error:', err.message);
+  } finally {
+    schedulerRunning = false;
   }
 };
 
