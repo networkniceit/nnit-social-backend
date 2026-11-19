@@ -36,6 +36,7 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY?.trim() });
 // ================================================================
 
 const clients = new Map();
+const tiktokPublisher = require('./tiktok-publisher')(pool);
 const scheduledPosts = [];
 const publishedPosts = [];
 const autoReplies = [];
@@ -816,105 +817,8 @@ app.delete('/api/auth/tiktok/disconnect', async (req, res) => {
 
 // ? FIXED - token refresh + scope error handling added
 app.post('/api/tiktok/post/video', async (req, res) => {
-  try {
-    const { videoUrl, caption, userId } = req.body;
-    const resolvedUserId = userId || 1;
-
-    const dbResult = await pool.query(
-      `SELECT access_token, page_access_token FROM social_accounts WHERE user_id = $1 AND platform = 'tiktok'`,
-      [resolvedUserId]
-    );
-    if (dbResult.rows.length === 0)
-      return res.status(400).json({ success: false, error: 'TikTok not connected' });
-
-    let { access_token, page_access_token: refresh_token } = dbResult.rows[0];
-
-    // Helper to refresh TikTok access token
-    const refreshAccessToken = async () => {
-      const TIKTOK_CLIENT_KEY = process.env.TIKTOK_CLIENT_KEY;
-      const TIKTOK_CLIENT_SECRET = process.env.TIKTOK_CLIENT_SECRET;
-
-      const response = await axios.post(
-        'https://open.tiktokapis.com/v2/oauth/token/',
-        new URLSearchParams({
-          client_key: TIKTOK_CLIENT_KEY,
-          client_secret: TIKTOK_CLIENT_SECRET,
-          grant_type: 'refresh_token',
-          refresh_token
-        }).toString(),
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Authorization': `Basic ${Buffer.from(`${TIKTOK_CLIENT_KEY}:${TIKTOK_CLIENT_SECRET}`).toString('base64')}`
-          }
-        }
-      );
-
-      const { access_token: new_access_token, refresh_token: new_refresh_token } = response.data;
-
-      await pool.query(
-        `UPDATE social_accounts SET access_token = $1, page_access_token = $2, updated_at = CURRENT_TIMESTAMP
-         WHERE user_id = $3 AND platform = 'tiktok'`,
-        [new_access_token, new_refresh_token || refresh_token, resolvedUserId]
-      );
-
-      return new_access_token;
-    };
-
-    // Attempt to post video
-    const doPost = async (token) => {
-      return await axios.post(
-        'https://open.tiktokapis.com/v2/post/publish/video/init/',
-        {
-          post_info: {
-            title: caption || '',
-            privacy_level: 'PUBLIC_TO_EVERYONE',
-            disable_duet: false,
-            disable_comment: false,
-            disable_stitch: false
-          },
-          source_info: { source: 'PULL_FROM_URL', video_url: videoUrl }
-        },
-        { headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' } }
-      );
-    };
-
-    try {
-      const initResponse = await doPost(access_token);
-      return res.json({ success: true, publishId: initResponse.data.data?.publish_id });
-
-    } catch (postError) {
-      const errCode = postError.response?.data?.error?.code;
-
-      // Token expired or scope issue � try refresh then retry
-      if (postError.response?.status === 401 || errCode === 'access_token_invalid' || errCode === 'scope_not_authorized') {
-        if (!refresh_token) {
-          return res.status(401).json({
-            success: false,
-            error: 'TikTok token expired. Please reconnect your TikTok account.'
-          });
-        }
-
-        try {
-          access_token = await refreshAccessToken();
-          const retryResponse = await doPost(access_token);
-          return res.json({ success: true, publishId: retryResponse.data.data?.publish_id });
-        } catch (refreshError) {
-          // Refresh failed � user must reconnect
-          return res.status(401).json({
-            success: false,
-            error: 'TikTok session expired. Please reconnect your TikTok account.'
-          });
-        }
-      }
-
-      throw postError;
-    }
-
-  } catch (error) {
-    console.error('TikTok post error:', error.response?.data || error.message);
-    res.status(500).json({ success: false, error: error.response?.data?.error?.message || error.message });
-  }
+  try { res.json(await tiktokPublisher.publish({ ...req.body, content: req.body.content || req.body.caption })); }
+  catch (error) { res.status(400).json({ success: false, error: error.message }); }
 });
 
 app.get('/api/tiktok/analytics', async (req, res) => {
@@ -1414,7 +1318,13 @@ app.post('/api/ai/content-ideas', async (req, res) => {
 
 app.post('/api/posts/schedule', async (req, res) => {
   try {
-    const { clientId, content, platforms, scheduledTime, media, hashtags } = req.body;
+    const { clientId, content, platforms, scheduledTime, hashtags } = req.body;
+    const media = Array.isArray(req.body.media) ? [...req.body.media] : [];
+    if (platforms?.includes('tiktok')) {
+      const video = media.find(item => item.type === 'video');
+      if (!video?.url) return res.status(400).json({ error: 'Attach a video before scheduling TikTok.' });
+      tiktokPublisher.validate(video.tiktok, await tiktokPublisher.creator());
+    }
     const result = await pool.query(
       `INSERT INTO posts (client_id, content, platforms, scheduled_time, media, hashtags, status, created_at)
        VALUES ($1, $2, $3, $4, $5, $6, 'scheduled', NOW()) RETURNING *`,
@@ -1522,6 +1432,13 @@ app.post('/api/posts/:postId/publish', async (req, res) => {
 
     for (const platform of platforms) {
       try {
+        if (platform === 'tiktok') {
+          results[platform] = await publishToTiktok(post, null, async pending => {
+            results[platform] = pending;
+            await pool.query('UPDATE posts SET status=$1, results=$2 WHERE id=$3', ['processing', JSON.stringify(results), post.id]);
+          });
+          continue;
+        }
         const tokenResult = await pool.query(
           `SELECT access_token, extra_data FROM social_connections WHERE platform = $1 AND status = 'connected' LIMIT 1`,
           [platform]
@@ -1552,7 +1469,7 @@ app.post('/api/posts/:postId/publish', async (req, res) => {
           );
           results[platform] = { success: true, tweetId: tweetRes.data?.data?.id };
         } else if (platform === 'tiktok') {
-          results[platform] = { success: false, error: 'TikTok requires a video URL' };
+          results[platform] = await publishToTiktok(post, null, async pending => { results[platform] = pending; await pool.query('UPDATE posts SET status=$1, results=$2 WHERE id=$3', ['processing', JSON.stringify(results), post.id]); });
         } else if (platform === 'youtube') {
           results[platform] = { success: false, error: 'YouTube requires a video URL' };
         } else {
@@ -2236,8 +2153,11 @@ const publishToLinkedin = async (post, account) => {
   return { platform: 'linkedin', success: true, post_id: r.data.id };
 };
 
-const publishToTiktok = async (post, account) => {
-  return { platform: 'tiktok', success: false, skipped: true, reason: 'TikTok requires video content' };
+const publishToTiktok = async (post, account, checkpoint) => {
+  const media = typeof post.media === 'string' ? JSON.parse(post.media) : post.media || [];
+  const video = media.find(item => item.type === 'video');
+  if (!video?.url) throw new Error('TikTok requires an attached video.');
+  return tiktokPublisher.publish({ content: post.content, videoUrl: video.url, tiktok: video.tiktok }, checkpoint);
 };
 
 const publishToYoutube = async (post, account) => {
@@ -2256,6 +2176,17 @@ const runScheduler = async () => {
   schedulerRunning = true;
   try {
     const now = new Date().toISOString();
+    const processing = await pool.query("SELECT * FROM posts WHERE status = 'processing'");
+    for (const pendingPost of processing.rows) {
+      const previous = typeof pendingPost.results === 'string' ? JSON.parse(pendingPost.results) : pendingPost.results || {};
+      if (previous.tiktok?.pending && previous.tiktok.publish_id) {
+        try {
+          previous.tiktok = { ...previous.tiktok, ...await tiktokPublisher.status(previous.tiktok.publish_id) };
+          const summary = deliveryStatus(previous);
+          await pool.query('UPDATE posts SET status=$1, results=$2, published_at=$3 WHERE id=$4', [summary.status, JSON.stringify(previous), summary.delivered ? pendingPost.published_at || now : null, pendingPost.id]);
+        } catch (e) { console.error('[Scheduler] TikTok status check:', e.message); }
+      }
+    }
     const due = await pool.query(`SELECT * FROM posts WHERE status = 'scheduled' AND scheduled_time <= $1`, [now]);
     if (due.rows.length === 0) return;
     console.log(`[Scheduler] Found ${due.rows.length} post(s) due`);
@@ -2267,7 +2198,10 @@ const runScheduler = async () => {
           const accountRes = await pool.query(`SELECT * FROM social_accounts WHERE platform = $1 ORDER BY updated_at DESC NULLS LAST, id DESC LIMIT 1`, [platform]);
           const account = accountRes.rows[0];
           if (!account) { results[platform] = { success: false, error: `No connected ${platform} account` }; continue; }
-          results[platform] = await platformPublishers[platform](post, account);
+          results[platform] = await platformPublishers[platform](post, account, async pending => {
+            results[platform] = pending;
+            await pool.query('UPDATE posts SET status=$1, results=$2 WHERE id=$3', ['processing', JSON.stringify(results), post.id]);
+          });
         } catch (err) {
           results[platform] = { success: false, error: err.message };
         }

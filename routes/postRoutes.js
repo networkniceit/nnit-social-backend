@@ -133,75 +133,20 @@ router.post('/instagram/post', async (req, res) => {
 });
 
 // ─── TIKTOK ──────────────────────────────────────────────────────────────────
-router.post('/tiktok/post', async (req, res) => {
+const tiktokPublisher = require('../tiktok-publisher')(pool);
+router.get('/tiktok/creator', async (req, res) => {
+  try { res.json({ success: true, creator: await tiktokPublisher.creator() }); }
+  catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+router.post('/tiktok/status', async (req, res) => {
   try {
-    const { content, videoUrl } = req.body;
-    const tokens = await getTokens('tiktok');
-
-    if (!tokens) return res.status(401).json({ error: 'TikTok not connected' });
-    if (!videoUrl) return res.status(400).json({ error: 'TikTok requires a video URL.' });
-
-    const accessToken = tokens.access_token;
-
-    console.log('TikTok: downloading video from', videoUrl);
-    const videoRes = await axios.get(videoUrl, { responseType: 'arraybuffer' });
-    const videoBuffer = Buffer.from(videoRes.data);
-    const videoSize = videoBuffer.length;
-    // TikTok rule: video up to 64MB is ONE chunk, chunk_size equals video size.
-    const MAX_SINGLE = 64 * 1024 * 1024;
-    const chunkSize = videoSize <= MAX_SINGLE ? videoSize : 20 * 1024 * 1024;
-    const totalChunks = videoSize <= MAX_SINGLE ? 1 : Math.floor(videoSize / chunkSize);
-    console.log(`TikTok: video size=${videoSize}, chunkSize=${chunkSize}, chunks=${totalChunks}`);
-
-    const initRes = await axios.post(
-      'https://open.tiktokapis.com/v2/post/publish/video/init/',
-      {
-        post_info: {
-          title:           content.substring(0, 150),
-          privacy_level:   process.env.TIKTOK_PRIVACY || 'SELF_ONLY', // unaudited TikTok apps may only post private; set TIKTOK_PRIVACY=PUBLIC_TO_EVERYONE after audit,
-          disable_duet:    false,
-          disable_comment: false,
-          disable_stitch:  false,
-        },
-        source_info: {
-          source:            'FILE_UPLOAD',
-          video_size:        videoSize,
-          chunk_size:        chunkSize,
-          total_chunk_count: totalChunks,
-        },
-      },
-      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json; charset=UTF-8' } }
-    );
-
-    const publishId = initRes.data?.data?.publish_id;
-    const uploadUrl = initRes.data?.data?.upload_url;
-    console.log('TikTok: init done, publishId=', publishId, 'uploadUrl=', uploadUrl);
-
-    if (!uploadUrl) throw new Error('TikTok did not return an upload URL');
-
-    for (let i = 0; i < totalChunks; i++) {
-      const start = i * chunkSize;
-      const end   = (i === totalChunks - 1) ? videoSize : start + chunkSize;
-      const chunk = videoBuffer.slice(start, end);
-      const contentRange = `bytes ${start}-${end - 1}/${videoSize}`;
-      console.log(`TikTok: uploading chunk ${i + 1}/${totalChunks}, range=${contentRange}`);
-      await axios.put(uploadUrl, chunk, {
-        headers: {
-          'Content-Type':   'video/mp4',
-          'Content-Range':  contentRange,
-          'Content-Length': chunk.length,
-        },
-        maxBodyLength: Infinity,
-        maxContentLength: Infinity,
-      });
-    }
-
-    console.log('TikTok: all chunks uploaded, publishId=', publishId);
-    res.json({ success: true, publishId, platform: 'tiktok' });
-  } catch (err) {
-    console.error('TikTok post error:', err.response?.data || err.message);
-    res.status(500).json({ error: err.response?.data?.error?.message || err.message });
-  }
+    if (!req.body.publishId) return res.status(400).json({ error: 'Missing publish ID' });
+    res.json(await tiktokPublisher.status(req.body.publishId));
+  } catch (e) { res.status(400).json({ success: false, error: e.message }); }
+});
+router.post('/tiktok/post', async (req, res) => {
+  try { res.json(await tiktokPublisher.publish(req.body)); }
+  catch (e) { res.status(400).json({ success: false, error: e.message }); }
 });
 
 // ─── YOUTUBE ─────────────────────────────────────────────────────────────────
